@@ -3,10 +3,11 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
-from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QColor, QFont, QIcon, QKeyEvent, QKeySequence, QShortcut
+from PyQt6.QtCore import QEvent, QSize, Qt
+from PyQt6.QtGui import QColor, QFont, QIcon, QKeyEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -475,9 +476,29 @@ class UsagePopupPanel(QWidget):
         self.refresh_provider_states()
         self._show_overview()
 
-        QShortcut(QKeySequence("Ctrl+Tab"), self, activated=lambda: self._cycle_view(1))
-        QShortcut(QKeySequence("Ctrl+Shift+Tab"), self, activated=lambda: self._cycle_view(-1))
-        QShortcut(QKeySequence("Ctrl+Backtab"), self, activated=lambda: self._cycle_view(-1))
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() in (QEvent.Type.ShortcutOverride, QEvent.Type.KeyPress):
+            if isinstance(obj, QWidget) and (obj is self or self.isAncestorOf(obj)):
+                mods = event.modifiers()
+                key = event.key()
+                if mods & Qt.KeyboardModifier.ControlModifier:
+                    if key == Qt.Key.Key_Backtab or (key == Qt.Key.Key_Tab and (mods & Qt.KeyboardModifier.ShiftModifier)):
+                        if event.type() == QEvent.Type.ShortcutOverride:
+                            event.accept()
+                            return True
+                        self._cycle_view(-1)
+                        return True
+                    if key == Qt.Key.Key_Tab:
+                        if event.type() == QEvent.Type.ShortcutOverride:
+                            event.accept()
+                            return True
+                        self._cycle_view(1)
+                        return True
+        return super().eventFilter(obj, event)
 
     def _cycle_view(self, step: int) -> None:
         # Order: Overview (-1), provider rows (0..N-1), Analytics (N)
