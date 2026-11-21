@@ -4,6 +4,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import time
 import webbrowser
 from datetime import datetime
@@ -44,29 +45,40 @@ def _parse_iso(val: Any) -> Optional[datetime]:
 
 def load_copilot_local_token() -> Optional[tuple[str, str]]:
     """Discover a GitHub Copilot OAuth token from local config files or gh CLI."""
-    for filename in ("hosts.json", "apps.json"):
-        path = os.path.expanduser(f"~/.config/github-copilot/{filename}")
-        if os.path.exists(path):
+    copilot_dirs = [os.path.expanduser("~/.config/github-copilot")]
+    if sys.platform == "win32":
+        local = os.getenv("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        copilot_dirs.insert(0, os.path.join(local, "github-copilot"))
+
+    for base_dir in copilot_dirs:
+        for filename in ("hosts.json", "apps.json"):
+            path = os.path.join(base_dir, filename)
+            if os.path.exists(path):
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        for key, val in data.items():
+                            if "github.com" in key and isinstance(val, dict) and val.get("oauth_token"):
+                                return str(val["oauth_token"]), path
+                except Exception:
+                    pass
+
+    gh_candidates = [os.path.expanduser("~/.config/gh/hosts.yml")]
+    if sys.platform == "win32":
+        appdata = os.getenv("APPDATA") or os.path.expanduser("~\\AppData\\Roaming")
+        gh_candidates.insert(0, os.path.join(appdata, "GitHub CLI", "hosts.yml"))
+
+    for gh_hosts in gh_candidates:
+        if os.path.exists(gh_hosts):
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    for key, val in data.items():
-                        if "github.com" in key and isinstance(val, dict) and val.get("oauth_token"):
-                            return str(val["oauth_token"]), f"~/.config/github-copilot/{filename}"
+                with open(gh_hosts, "r", encoding="utf-8") as f:
+                    content = f.read()
+                m = re.search(r"oauth_token:\s*(\S+)", content)
+                if m:
+                    return m.group(1).strip(), gh_hosts
             except Exception:
                 pass
-
-    gh_hosts = os.path.expanduser("~/.config/gh/hosts.yml")
-    if os.path.exists(gh_hosts):
-        try:
-            with open(gh_hosts, "r", encoding="utf-8") as f:
-                content = f.read()
-            m = re.search(r"oauth_token:\s*(\S+)", content)
-            if m:
-                return m.group(1).strip(), "~/.config/gh/hosts.yml"
-        except Exception:
-            pass
 
     try:
         proc = subprocess.run(["gh", "auth", "token"], capture_output=True, text=True, timeout=3)

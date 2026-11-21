@@ -2,27 +2,41 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
 def default_config_dir() -> str:
+    if sys.platform == "win32":
+        base = os.getenv("APPDATA") or os.path.expanduser("~\\AppData\\Roaming")
+        return os.path.join(base, "ai-usage-tray")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/ai-usage-tray")
     xdg = os.getenv("XDG_CONFIG_HOME")
     base = xdg if xdg else os.path.expanduser("~/.config")
     return os.path.join(base, "ai-usage-tray")
 
 
 def default_data_dir() -> str:
+    if sys.platform == "win32":
+        base = os.getenv("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        return os.path.join(base, "ai-usage-tray")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/ai-usage-tray")
     xdg = os.getenv("XDG_DATA_HOME")
     base = xdg if xdg else os.path.expanduser("~/.local/share")
     return os.path.join(base, "ai-usage-tray")
 
 
 def default_runtime_dir() -> str:
+    if sys.platform == "win32":
+        return os.path.join(tempfile.gettempdir(), "ai-usage-tray")
     xdg = os.getenv("XDG_RUNTIME_DIR")
     if xdg:
         return os.path.join(xdg, "ai-usage-tray")
-    return f"/tmp/ai-usage-tray-{os.getuid()}"
+    return os.path.join(tempfile.gettempdir(), f"ai-usage-tray-{os.getuid()}")
 
 
 @dataclass

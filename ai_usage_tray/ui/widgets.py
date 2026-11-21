@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
-from PyQt6.QtCore import QPointF, QRectF, Qt
-from PyQt6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -68,11 +68,20 @@ class RingGaugeWidget(QWidget):
 class MiniSparkline(QWidget):
     """Compact historical trend sparkline drawn with QPainter."""
 
+    clicked = pyqtSignal()
+
     def __init__(self, values: list[float], color: QColor, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self._values = values
         self._color = color
         self.setFixedSize(68, 18)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         if len(self._values) < 2:
@@ -105,6 +114,7 @@ class QuotaBucketCard(QFrame):
         self,
         bucket: QuotaBucket,
         history: Optional[list[tuple[datetime, float]] | list[float]] = None,
+        on_trend_click: Optional[Callable[[], None]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -215,6 +225,10 @@ class QuotaBucketCard(QFrame):
                 values = list(history)  # type: ignore[arg-type]
                 tooltip = f"Recent quota trend ({len(values)} samples)"
             spark = MiniSparkline(values, color)
+            if on_trend_click is not None:
+                spark.setCursor(Qt.CursorShape.PointingHandCursor)
+                spark.clicked.connect(on_trend_click)
+                tooltip = f"{tooltip}\nClick to view in Analytics"
             spark.setToolTip(tooltip)
 
         reset_label = QLabel("  •  ".join(meta_parts))

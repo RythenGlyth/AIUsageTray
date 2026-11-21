@@ -511,6 +511,14 @@ class AnalyticsTabView(QWidget):
         else:
             self.token_label.setText("No token events recorded yet (ready for local CLI log ingestion).")
 
+    def focus_series(self, provider_id: str, bucket_id: str) -> None:
+        """Enable only (provider_id, bucket_id) in the main chart and refresh."""
+        since_all = datetime.now(timezone.utc) - timedelta(days=30)
+        all_series = self.storage.get_all_series_since(since_all)
+        target = (provider_id, bucket_id)
+        self._disabled_keys = {k for k in all_series.keys() if k != target}
+        self.refresh()
+
     def _toggle_series(self, key: tuple[str, str], checked: bool) -> None:
         if checked:
             self._disabled_keys.discard(key)

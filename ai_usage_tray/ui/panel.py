@@ -39,6 +39,7 @@ class ProviderTabView(QWidget):
         storage: HistoryStorage,
         get_trend_hours: Callable[[], int],
         on_connect_oauth: Callable[[str], None],
+        on_open_bucket_analytics: Optional[Callable[[str, str], None]] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
@@ -46,6 +47,7 @@ class ProviderTabView(QWidget):
         self.storage = storage
         self.get_trend_hours = get_trend_hours
         self.on_connect_oauth = on_connect_oauth
+        self.on_open_bucket_analytics = on_open_bucket_analytics
         self._last_snapshot: Optional[ProviderUsageSnapshot] = None
         self._disabled: bool = False
 
@@ -202,7 +204,12 @@ class ProviderTabView(QWidget):
 
             for bucket in group.buckets:
                 hist = self.storage.get_bucket_history_since(self.provider_id, bucket.bucket_id, since)
-                card = QuotaBucketCard(bucket, history=hist)
+                on_click = (
+                    (lambda bid=bucket.bucket_id: self.on_open_bucket_analytics(self.provider_id, bid))
+                    if self.on_open_bucket_analytics is not None
+                    else None
+                )
+                card = QuotaBucketCard(bucket, history=hist, on_trend_click=on_click)
                 self.body_layout.addWidget(card)
 
         self.body_layout.addStretch(1)
@@ -464,6 +471,7 @@ class UsagePopupPanel(QWidget):
                 storage=self.storage,
                 get_trend_hours=self._current_trend_hours,
                 on_connect_oauth=self.on_connect_oauth,
+                on_open_bucket_analytics=self._show_analytics_for_bucket,
             )
             self.provider_views[pid] = view
             self.stack.addWidget(view)
@@ -603,6 +611,15 @@ class UsagePopupPanel(QWidget):
         self.overview_btn.setChecked(False)
         self.analytics_btn.setChecked(True)
         self.analytics_view.refresh()
+        self.stack.setCurrentWidget(self.analytics_view)
+
+    def _show_analytics_for_bucket(self, provider_id: str, bucket_id: str) -> None:
+        self.provider_list.blockSignals(True)
+        self.provider_list.setCurrentRow(-1)
+        self.provider_list.blockSignals(False)
+        self.overview_btn.setChecked(False)
+        self.analytics_btn.setChecked(True)
+        self.analytics_view.focus_series(provider_id, bucket_id)
         self.stack.setCurrentWidget(self.analytics_view)
 
     def _current_trend_hours(self) -> int:

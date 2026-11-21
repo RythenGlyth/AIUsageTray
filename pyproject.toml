@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "ai-usage-tray"
 version = "0.1.0"
-description = "KDE Plasma system tray monitor for AI usage limits (Antigravity, OpenAI Codex, Claude)"
+description = "System tray monitor for AI usage limits (Antigravity, OpenAI Codex, Claude, Gemini, Copilot)"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,7 +13,7 @@ dependencies = [
     "keyring>=24.0",
     "requests>=2.31",
     "cryptography>=41.0",
-    "secretstorage>=3.3",
+    'secretstorage>=3.3; sys_platform == "linux"',
 ]
 
 [project.optional-dependencies]

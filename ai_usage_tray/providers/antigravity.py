@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -51,14 +53,31 @@ def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
+def _extract_server_info(pid: int, cmd: str) -> Optional[LocalLanguageServerInfo]:
+    if "language_server" not in cmd:
+        return None
+    if "antigravity" not in cmd.lower() and "--csrf_token" not in cmd:
+        return None
+    token_match = re.search(r"--csrf_token(?:=|\s+)([A-Za-z0-9._-]+)", cmd)
+    if not token_match:
+        return None
+    port_match = re.search(r"--https_server_port(?:=|\s+)(\d+)", cmd)
+    explicit_port: Optional[int] = None
+    if port_match:
+        p = int(port_match.group(1))
+        if p > 0:
+            explicit_port = p
+    return LocalLanguageServerInfo(
+        pid=pid,
+        csrf_token=token_match.group(1),
+        explicit_port=explicit_port,
+    )
+
+
 def parse_ps_aux_for_antigravity(ps_output: str) -> list[LocalLanguageServerInfo]:
     """Parse `ps aux` output for running Antigravity language_server processes."""
     results: list[LocalLanguageServerInfo] = []
     for line in ps_output.splitlines():
-        if "language_server" not in line:
-            continue
-        if "antigravity" not in line and "--csrf_token" not in line:
-            continue
         parts = line.split(None, 10)
         if len(parts) < 11:
             continue
@@ -66,23 +85,56 @@ def parse_ps_aux_for_antigravity(ps_output: str) -> list[LocalLanguageServerInfo
             pid = int(parts[1])
         except ValueError:
             continue
-        cmd = parts[10]
-        token_match = re.search(r"--csrf_token(?:=|\s+)([A-Za-z0-9._-]+)", cmd)
-        if not token_match:
+        info = _extract_server_info(pid, parts[10])
+        if info:
+            results.append(info)
+    return results
+
+
+def parse_ps_command_lines_for_antigravity(ps_output: str) -> list[LocalLanguageServerInfo]:
+    """Parse `ps -ax -o pid=,command=` output (macOS/POSIX) for Antigravity language_server."""
+    results: list[LocalLanguageServerInfo] = []
+    for line in ps_output.splitlines():
+        stripped = line.strip()
+        if not stripped:
             continue
-        port_match = re.search(r"--https_server_port(?:=|\s+)(\d+)", cmd)
-        explicit_port: Optional[int] = None
-        if port_match:
-            p = int(port_match.group(1))
-            if p > 0:
-                explicit_port = p
-        results.append(
-            LocalLanguageServerInfo(
-                pid=pid,
-                csrf_token=token_match.group(1),
-                explicit_port=explicit_port,
-            )
-        )
+        parts = stripped.split(None, 1)
+        if len(parts) < 2:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        info = _extract_server_info(pid, parts[1])
+        if info:
+            results.append(info)
+    return results
+
+
+def parse_windows_cim_processes_for_antigravity(json_output: str) -> list[LocalLanguageServerInfo]:
+    """Parse PowerShell `Get-CimInstance Win32_Process | ConvertTo-Json` output."""
+    if not json_output.strip():
+        return []
+    try:
+        raw = json.loads(json_output)
+    except Exception:
+        return []
+    items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+    results: list[LocalLanguageServerInfo] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        pid_val = item.get("ProcessId")
+        cmd = item.get("CommandLine") or ""
+        if pid_val is None or not isinstance(cmd, str):
+            continue
+        try:
+            pid = int(pid_val)
+        except (ValueError, TypeError):
+            continue
+        info = _extract_server_info(pid, cmd)
+        if info:
+            results.append(info)
     return results
 
 
@@ -93,9 +145,8 @@ def parse_ss_ports_for_pid(ss_output: str, pid: int) -> list[int]:
     for line in ss_output.splitlines():
         if pid_marker not in line and f"pid={pid})" not in line:
             continue
-        parts = line.split()
-        for token in parts:
-            if token.startswith("127.0.0.1:") or token.startswith("[::1]:") or token.startswith("0.0.0.0:"):
+        for token in line.split():
+            if token.startswith(("127.0.0.1:", "[::1]:", "0.0.0.0:")):
                 port_str = token.rsplit(":", 1)[-1]
                 if port_str.isdigit():
                     port = int(port_str)
@@ -104,8 +155,119 @@ def parse_ss_ports_for_pid(ss_output: str, pid: int) -> list[int]:
     return ports
 
 
+def parse_lsof_ports_for_pid(lsof_output: str) -> list[int]:
+    """Extract listening loopback TCP ports from `lsof -nP -iTCP -sTCP:LISTEN -a -p <pid>`."""
+    ports: list[int] = []
+    for line in lsof_output.splitlines():
+        if "(LISTEN)" not in line:
+            continue
+        for token in line.split():
+            if token.startswith(("127.0.0.1:", "[::1]:", "*:")):
+                port_str = token.rsplit(":", 1)[-1]
+                if port_str.isdigit():
+                    port = int(port_str)
+                    if port not in ports:
+                        ports.append(port)
+    return ports
+
+
+def parse_windows_netstat_ports_for_pid(netstat_output: str, pid: int) -> list[int]:
+    """Extract listening loopback TCP ports for a given PID from `netstat -ano -p tcp`."""
+    ports: list[int] = []
+    pid_str = str(pid)
+    for line in netstat_output.splitlines():
+        parts = line.split()
+        if len(parts) < 5 or parts[0].upper() != "TCP":
+            continue
+        if parts[-1] != pid_str or parts[-2].upper() != "LISTENING":
+            continue
+        local_addr = parts[1]
+        if local_addr.startswith(("127.0.0.1:", "[::1]:", "0.0.0.0:", "[::]:")):
+            port_str = local_addr.rsplit(":", 1)[-1]
+            if port_str.isdigit():
+                port = int(port_str)
+                if port not in ports:
+                    ports.append(port)
+    return ports
+
+
+def _discover_windows_servers() -> list[tuple[LocalLanguageServerInfo, list[int]]]:
+    ps_cmd = (
+        "Get-CimInstance Win32_Process -Filter \"Name LIKE '%language_server%'\" "
+        "| Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"
+    )
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd],
+            capture_output=True,
+            text=True,
+            timeout=6,
+        )
+        if proc.returncode != 0:
+            return []
+        servers = parse_windows_cim_processes_for_antigravity(proc.stdout)
+    except Exception:
+        return []
+
+    if not servers:
+        return []
+
+    netstat_output = ""
+    try:
+        ns_proc = subprocess.run(["netstat", "-ano", "-p", "tcp"], capture_output=True, text=True, timeout=5)
+        if ns_proc.returncode == 0:
+            netstat_output = ns_proc.stdout
+    except Exception:
+        pass
+
+    discovered: list[tuple[LocalLanguageServerInfo, list[int]]] = []
+    for srv in servers:
+        ports: list[int] = [srv.explicit_port] if srv.explicit_port else []
+        for p in parse_windows_netstat_ports_for_pid(netstat_output, srv.pid):
+            if p not in ports:
+                ports.append(p)
+        if ports:
+            discovered.append((srv, ports))
+    return discovered
+
+
+def _discover_macos_servers() -> list[tuple[LocalLanguageServerInfo, list[int]]]:
+    try:
+        ps_proc = subprocess.run(["ps", "-ax", "-o", "pid=,command="], capture_output=True, text=True, timeout=5)
+        if ps_proc.returncode != 0:
+            return []
+        servers = parse_ps_command_lines_for_antigravity(ps_proc.stdout)
+    except Exception:
+        return []
+
+    discovered: list[tuple[LocalLanguageServerInfo, list[int]]] = []
+    for srv in servers:
+        ports: list[int] = [srv.explicit_port] if srv.explicit_port else []
+        try:
+            lsof_proc = subprocess.run(
+                ["lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-a", "-p", str(srv.pid)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if lsof_proc.returncode == 0:
+                for p in parse_lsof_ports_for_pid(lsof_proc.stdout):
+                    if p not in ports:
+                        ports.append(p)
+        except Exception:
+            pass
+        if ports:
+            discovered.append((srv, ports))
+    return discovered
+
+
 def discover_local_language_servers() -> list[tuple[LocalLanguageServerInfo, list[int]]]:
     """Discover running Antigravity language_server instances and their listening ports."""
+    if sys.platform == "win32":
+        return _discover_windows_servers()
+    if sys.platform == "darwin":
+        return _discover_macos_servers()
+
     try:
         ps_proc = subprocess.run(["ps", "aux"], capture_output=True, text=True, timeout=5)
         if ps_proc.returncode != 0:

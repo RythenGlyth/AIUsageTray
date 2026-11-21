@@ -4,6 +4,7 @@ import glob
 import json
 import os
 import re
+import sys
 from typing import Any, Optional
 
 import requests
@@ -19,10 +20,18 @@ def find_google_browser_cookies() -> tuple[list[ChromiumCookie], Optional[str]]:
     return find_browser_cookie_records("google.com", ("SID", "__Secure-1PSID"))
 
 
+def _platform_ua_token() -> str:
+    if sys.platform == "win32":
+        return "Windows NT 10.0; Win64; x64"
+    if sys.platform == "darwin":
+        return "Macintosh; Intel Mac OS X 10_15_7"
+    return "X11; Linux x86_64"
+
+
 def build_google_session(records: list[ChromiumCookie], origin: str) -> requests.Session:
     session = requests.Session()
     session.headers["User-Agent"] = (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        f"Mozilla/5.0 ({_platform_ua_token()}) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
     )
     session.headers["Origin"] = origin

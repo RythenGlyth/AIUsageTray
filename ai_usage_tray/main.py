@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import atexit
-import fcntl
 import os
 import sys
 from typing import Optional
@@ -21,18 +20,31 @@ from ai_usage_tray.ui.tray import AIUsageTrayApp
 
 
 def acquire_single_instance_lock() -> Optional[object]:
-    """Acquire an exclusive flock lock so only one tray instance runs per user."""
+    """Acquire an exclusive non-blocking file lock so only one tray instance runs per user."""
     runtime_dir = default_runtime_dir()
     os.makedirs(runtime_dir, mode=0o700, exist_ok=True)
     lock_path = os.path.join(runtime_dir, "ai-usage-tray.lock")
-    fh = open(lock_path, "w", encoding="utf-8")
+    fh = open(lock_path, "a+", encoding="utf-8")
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if sys.platform == "win32":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         fh.close()
         return None
-    fh.write(str(os.getpid()))
-    fh.flush()
+    try:
+        fh.seek(0)
+        fh.truncate()
+        fh.write(str(os.getpid()))
+        fh.flush()
+    except OSError:
+        pass
     atexit.register(lambda: fh.close())
     return fh
 

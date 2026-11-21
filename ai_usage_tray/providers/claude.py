@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -128,6 +129,15 @@ def _extract_token_from_json_blob(data: Any) -> Optional[OAuthTokens]:
     return None
 
 
+def _claude_desktop_dir() -> str:
+    if sys.platform == "win32":
+        appdata = os.getenv("APPDATA") or os.path.expanduser("~\\AppData\\Roaming")
+        return os.path.join(appdata, "Claude")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/Application Support/Claude")
+    return os.path.expanduser("~/.config/Claude")
+
+
 def load_claude_code_credentials() -> Optional[OAuthTokens]:
     """Load OAuth tokens from ~/.claude/.credentials.json or system keyring."""
     cred_path = os.path.expanduser("~/.claude/.credentials.json")
@@ -142,7 +152,8 @@ def load_claude_code_credentials() -> Optional[OAuthTokens]:
 
     if keyring is not None:
         try:
-            raw = keyring.get_password("Claude Code-credentials", os.getenv("USER", ""))
+            username = os.getenv("USER") or os.getenv("USERNAME") or ""
+            raw = keyring.get_password("Claude Code-credentials", username) if username else None
             if not raw:
                 raw = keyring.get_password("Claude Code-credentials", "claude")
             if raw:
@@ -155,8 +166,8 @@ def load_claude_code_credentials() -> Optional[OAuthTokens]:
 
 
 def load_claude_desktop_oauth_token() -> Optional[OAuthTokens]:
-    """Decrypt oauth:tokenCacheV2 or oauth:tokenCache from ~/.config/Claude/config.json."""
-    cfg_path = os.path.expanduser("~/.config/Claude/config.json")
+    """Decrypt oauth:tokenCacheV2 or oauth:tokenCache from Claude Desktop config.json."""
+    cfg_path = os.path.join(_claude_desktop_dir(), "config.json")
     if not os.path.exists(cfg_path):
         return None
     try:
@@ -169,7 +180,7 @@ def load_claude_desktop_oauth_token() -> Optional[OAuthTokens]:
         enc = data.get(key)
         if not isinstance(enc, str) or not enc:
             continue
-        plain = decrypt_electron_base64_value(enc, applications=("Claude",))
+        plain = decrypt_electron_base64_value(enc, applications=("Claude",), local_state_hint=cfg_path)
         if not plain:
             continue
         try:
@@ -184,8 +195,13 @@ def load_claude_desktop_oauth_token() -> Optional[OAuthTokens]:
 
 def load_claude_desktop_cookies() -> tuple[dict[str, str], Optional[str]]:
     """Extract session cookies and organization UUID from Claude Desktop."""
-    base = os.path.expanduser("~/.config/Claude")
-    cookies = read_chromium_cookies(os.path.join(base, "Cookies"), "claude.ai", applications=("Claude",))
+    base = _claude_desktop_dir()
+    cookies_candidates = (
+        os.path.join(base, "Network", "Cookies"),
+        os.path.join(base, "Cookies"),
+    )
+    cookies_path = next((p for p in cookies_candidates if os.path.exists(p)), cookies_candidates[-1])
+    cookies = read_chromium_cookies(cookies_path, "claude.ai", applications=("Claude",))
     org_id = cookies.get("lastActiveOrg")
 
     if not org_id:

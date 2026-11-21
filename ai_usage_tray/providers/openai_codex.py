@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
@@ -35,12 +36,30 @@ OPENAI_DEFAULT_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_SCOPES = ["openid", "profile", "email", "offline_access"]
 CHATGPT_WHAM_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
 
-KNOWN_CODEX_PATHS = (
-    "/usr/lib/chatgpt/resources/codex",
-    "/opt/ChatGPT/resources/codex",
-    "/opt/chatgpt/resources/codex",
-    os.path.expanduser("~/.local/bin/codex"),
-)
+
+def _known_codex_paths() -> tuple[str, ...]:
+    if sys.platform == "win32":
+        local = os.getenv("LOCALAPPDATA") or os.path.expanduser("~\\AppData\\Local")
+        appdata = os.getenv("APPDATA") or os.path.expanduser("~\\AppData\\Roaming")
+        return (
+            os.path.join(local, "Programs", "ChatGPT", "resources", "codex.exe"),
+            os.path.join(appdata, "npm", "codex.cmd"),
+            os.path.join(appdata, "npm", "codex.exe"),
+        )
+    if sys.platform == "darwin":
+        return (
+            "/Applications/ChatGPT.app/Contents/Resources/codex",
+            os.path.expanduser("~/Applications/ChatGPT.app/Contents/Resources/codex"),
+            "/opt/homebrew/bin/codex",
+            "/usr/local/bin/codex",
+            os.path.expanduser("~/.local/bin/codex"),
+        )
+    return (
+        "/usr/lib/chatgpt/resources/codex",
+        "/opt/ChatGPT/resources/codex",
+        "/opt/chatgpt/resources/codex",
+        os.path.expanduser("~/.local/bin/codex"),
+    )
 
 
 def _window_label(duration_mins: Optional[int], default_label: str) -> tuple[str, str]:
@@ -73,19 +92,29 @@ def find_codex_binary(configured_path: str = "", allow_slow_search: bool = True)
     if on_path:
         return on_path
 
-    for candidate in KNOWN_CODEX_PATHS:
+    for candidate in _known_codex_paths():
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
 
-    if not allow_slow_search:
+    if not allow_slow_search or sys.platform == "win32":
         return None
 
-    search_roots = [p for p in ("/opt", "/usr/lib", "/usr/share", os.path.expanduser("~/.local")) if os.path.exists(p)]
+    if sys.platform == "darwin":
+        search_roots = [
+            p
+            for p in ("/Applications", os.path.expanduser("~/Applications"), "/opt/homebrew", "/usr/local", os.path.expanduser("~/.local"))
+            if os.path.exists(p)
+        ]
+        exec_flag = ["-perm", "-111"]
+    else:
+        search_roots = [p for p in ("/opt", "/usr/lib", "/usr/share", os.path.expanduser("~/.local")) if os.path.exists(p)]
+        exec_flag = ["-executable"]
+
     if not search_roots:
         return None
     try:
         proc = subprocess.run(
-            ["find", *search_roots, "-maxdepth", "4", "-name", "codex", "-type", "f", "-executable"],
+            ["find", *search_roots, "-maxdepth", "4", "-name", "codex", "-type", "f", *exec_flag],
             capture_output=True,
             text=True,
             timeout=5,
