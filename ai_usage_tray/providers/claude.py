@@ -16,7 +16,11 @@ from ai_usage_tray.core.auth import (
     run_pkce_loopback_flow,
     save_keyring_tokens,
 )
-from ai_usage_tray.core.chromium_crypto import decrypt_electron_base64_value, read_chromium_cookies
+from ai_usage_tray.core.chromium_crypto import (
+    decrypt_electron_base64_value,
+    find_browser_cookie_records,
+    read_chromium_cookies,
+)
 from ai_usage_tray.core.config import ConfigManager
 from ai_usage_tray.core.models import (
     ProviderUsageSnapshot,
@@ -179,9 +183,14 @@ def load_claude_desktop_oauth_token() -> Optional[OAuthTokens]:
 
 
 def load_claude_desktop_cookies() -> tuple[dict[str, str], Optional[str]]:
-    """Extract session cookies and organization UUID from Claude Desktop."""
+    """Extract session cookies and organization UUID from Claude Desktop or browser."""
     base = os.path.expanduser("~/.config/Claude")
     cookies = read_chromium_cookies(os.path.join(base, "Cookies"), "claude.ai", applications=("Claude",))
+    if not cookies.get("sessionKey"):
+        records, _ = find_browser_cookie_records("claude.ai", ("sessionKey",))
+        if records:
+            cookies = {r.name: r.value for r in records}
+
     org_id = cookies.get("lastActiveOrg")
 
     if not org_id:

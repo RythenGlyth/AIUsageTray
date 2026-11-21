@@ -190,3 +190,28 @@ def read_chromium_cookies(
         c.name: c.value
         for c in read_chromium_cookie_records(cookies_db_path, host_filter, applications=applications)
     }
+
+
+BROWSER_COOKIE_PATTERNS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("~/.config/yandex-browser/*/Cookies", ("yandex", "Yandex", "yandex-browser", "chrome", "chromium")),
+    ("~/.config/google-chrome/*/Cookies", ("chrome", "chromium")),
+    ("~/.config/chromium/*/Cookies", ("chromium", "chrome")),
+    ("~/.config/BraveSoftware/Brave-Browser/*/Cookies", ("brave", "Brave", "chrome", "chromium")),
+    ("~/.config/vivaldi/*/Cookies", ("vivaldi", "Vivaldi", "chrome", "chromium")),
+)
+
+
+def find_browser_cookie_records(
+    host_filter: str,
+    required_cookie_names: tuple[str, ...],
+) -> tuple[list[ChromiumCookie], Optional[str]]:
+    """Search installed Chromium-based browsers for cookies matching host_filter and required names."""
+    import glob
+
+    for pattern, apps in BROWSER_COOKIE_PATTERNS:
+        for db_path in sorted(glob.glob(os.path.expanduser(pattern))):
+            records = read_chromium_cookie_records(db_path, host_filter, applications=apps)
+            names = {r.name for r in records}
+            if any(req in names for req in required_cookie_names):
+                return records, db_path
+    return [], None

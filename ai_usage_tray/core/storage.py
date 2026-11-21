@@ -105,6 +105,33 @@ class HistoryStorage:
     def get_bucket_history(self, provider_id: str, bucket_id: str, limit: int = 24) -> list[float]:
         return [val for _, val in self.get_bucket_history_points(provider_id, bucket_id, limit=limit)]
 
+    def get_bucket_history_since(
+        self,
+        provider_id: str,
+        bucket_id: str,
+        since: datetime,
+    ) -> list[tuple[datetime, float]]:
+        since_iso = since.astimezone(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT fetched_at, remaining_fraction FROM quota_snapshots
+                WHERE provider_id = ? AND bucket_id = ? AND fetched_at >= ?
+                ORDER BY id ASC
+                """,
+                (provider_id, bucket_id, since_iso),
+            ).fetchall()
+        points: list[tuple[datetime, float]] = []
+        for ts_str, frac_str in rows:
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                points.append((dt, float(Decimal(frac_str))))
+            except Exception:
+                continue
+        return points
+
     def get_all_series_since(self, since: datetime) -> dict[tuple[str, str], list[tuple[datetime, float]]]:
         """Return {(provider_id, bucket_id): [(dt, remaining_float), ...]} since the given UTC datetime."""
         since_iso = since.astimezone(timezone.utc).isoformat()

@@ -18,6 +18,7 @@ from ai_usage_tray.core.auth import (
     run_pkce_loopback_flow,
     save_keyring_tokens,
 )
+from ai_usage_tray.core.chromium_crypto import find_browser_cookie_records
 from ai_usage_tray.core.config import ConfigManager
 from ai_usage_tray.core.models import (
     ProviderUsageSnapshot,
@@ -266,7 +267,12 @@ class OpenAICodexProvider(UsageProvider):
             return AuthStatus(True, "OAuth (keyring)")
         if load_codex_cli_auth() is not None:
             return AuthStatus(True, "Codex CLI (~/.codex/auth.json)")
-        return AuthStatus(False, "No Codex binary or OAuth token found", needs_interactive_login=True)
+        records, db_path = find_browser_cookie_records(
+            "chatgpt.com", ("__Secure-next-auth.session-token", "__Secure-next-auth.session-token.0")
+        )
+        if records and db_path:
+            return AuthStatus(True, f"Browser session ({os.path.basename(os.path.dirname(os.path.dirname(db_path)))})")
+        return AuthStatus(False, "No Codex binary, OAuth token, or browser session found", needs_interactive_login=True)
 
     def start_oauth_login(self) -> tuple[bool, str]:
         cfg = self.config_manager.config.openai_codex
@@ -302,14 +308,56 @@ class OpenAICodexProvider(UsageProvider):
                 )
 
         if mode in ("auto", "oauth"):
-            return self._fetch_from_oauth()
+            oauth_snap = self._fetch_from_oauth()
+            if not oauth_snap.auth_required or mode == "oauth":
+                return oauth_snap
 
-        return ProviderUsageSnapshot(
-            provider_id=self.provider_id,
-            provider_name=self.display_name,
-            source_label="Unconfigured",
-            error=f"Unknown mode: {mode}",
+        if mode in ("auto", "browser"):
+            browser_snap = self._fetch_from_browser_cookies()
+            if browser_snap is not None:
+                return browser_snap
+
+        return self._fetch_from_oauth()
+
+    def _fetch_from_browser_cookies(self) -> Optional[ProviderUsageSnapshot]:
+        records, _ = find_browser_cookie_records(
+            "chatgpt.com", ("__Secure-next-auth.session-token", "__Secure-next-auth.session-token.0")
         )
+        if not records:
+            return None
+
+        session = requests.Session()
+        session.headers["User-Agent"] = (
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        )
+        for c in records:
+            session.cookies.set(c.name, c.value, domain=c.host_key, path=c.path, secure=c.is_secure)
+
+        try:
+            sess_resp = session.get("https://chatgpt.com/api/auth/session", timeout=12)
+            if sess_resp.status_code != 200:
+                return None
+            access_token = sess_resp.json().get("accessToken")
+            if not access_token:
+                return None
+            resp = session.get(
+                CHATGPT_WHAM_USAGE_URL,
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                timeout=12,
+            )
+            if resp.status_code >= 400:
+                return ProviderUsageSnapshot(
+                    provider_id=self.provider_id,
+                    provider_name=self.display_name,
+                    source_label="Browser Session",
+                    error=f"ChatGPT browser usage error ({resp.status_code}).",
+                )
+            snap = parse_wham_usage_response(resp.json())
+            snap.source_label = "Browser Session"
+            return snap
+        except Exception:
+            return None
 
     def _fetch_from_codex_binary(self) -> Optional[ProviderUsageSnapshot]:
         codex_bin = self._resolve_codex_binary()

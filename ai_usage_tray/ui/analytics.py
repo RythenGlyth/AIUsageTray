@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -20,27 +21,37 @@ from PyQt6.QtWidgets import (
 from ai_usage_tray.core.storage import HistoryStorage
 
 SERIES_PALETTE = (
-    QColor("#3498db"),
-    QColor("#2ecc71"),
-    QColor("#e67e22"),
-    QColor("#9b59b6"),
-    QColor("#1abc9c"),
-    QColor("#e74c3c"),
-    QColor("#f1c40f"),
-    QColor("#fd79a8"),
+    QColor("#3498db"),  # Blue
+    QColor("#2ecc71"),  # Emerald
+    QColor("#e67e22"),  # Orange
+    QColor("#9b59b6"),  # Purple
+    QColor("#1abc9c"),  # Teal
+    QColor("#e74c3c"),  # Red
+    QColor("#f1c40f"),  # Yellow
+    QColor("#fd79a8"),  # Pink
+    QColor("#00cec9"),  # Cyan
+    QColor("#a29bfe"),  # Periwinkle
+    QColor("#fab1a0"),  # Peach
+    QColor("#55efc4"),  # Mint
+    QColor("#ffeaa7"),  # Cream
+    QColor("#ff7675"),  # Coral
 )
 
 DAYS_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 
 
-def compute_burn_rate_hours(points: list[tuple[datetime, float]]) -> Optional[float]:
-    """Estimate hours until 0% remaining from recent downward consumption slope.
+@dataclass(slots=True)
+class BurnRateDetails:
+    rate_pct_per_hour: float
+    hours_to_empty: Optional[float]
+    span_hours: float
+    sample_count: int
 
-    Returns None if there is no net downward consumption.
-    """
+
+def compute_burn_rate_details(points: list[tuple[datetime, float]]) -> Optional[BurnRateDetails]:
+    """Compute burn rate (%/hr), hours to 0%, and sample span from recent non-reset segment."""
     if len(points) < 2:
         return None
-    # Walk backwards until we hit a reset jump (> +5%)
     segment: list[tuple[datetime, float]] = [points[-1]]
     for i in range(len(points) - 2, -1, -1):
         if points[i + 1][1] - points[i][1] > 0.05:
@@ -55,9 +66,33 @@ def compute_burn_rate_hours(points: list[tuple[datetime, float]]) -> Optional[fl
         return None
     drop = segment[0][1] - segment[-1][1]
     if drop <= 0.0005:
-        return None
-    rate_per_hour = drop / dt_hours
-    return max(0.0, segment[-1][1] / rate_per_hour)
+        return BurnRateDetails(rate_pct_per_hour=0.0, hours_to_empty=None, span_hours=dt_hours, sample_count=len(segment))
+
+    rate_fraction_per_hour = drop / dt_hours
+    hours_to_empty = max(0.0, segment[-1][1] / rate_fraction_per_hour)
+    return BurnRateDetails(
+        rate_pct_per_hour=rate_fraction_per_hour * 100.0,
+        hours_to_empty=hours_to_empty,
+        span_hours=dt_hours,
+        sample_count=len(segment),
+    )
+
+
+def compute_burn_rate_hours(points: list[tuple[datetime, float]]) -> Optional[float]:
+    """Estimate hours until 0% remaining from recent downward consumption slope."""
+    details = compute_burn_rate_details(points)
+    return details.hours_to_empty if details is not None else None
+
+
+def format_short_duration(hours: float) -> str:
+    total_mins = max(0, int(round(hours * 60)))
+    days, rem = divmod(total_mins, 1440)
+    hrs, mins = divmod(rem, 60)
+    if days > 0:
+        return f"{days}d {hrs}h"
+    if hrs > 0:
+        return f"{hrs}h {mins}m"
+    return f"{mins}m"
 
 
 def compute_reset_cycle_efficiency(points: list[tuple[datetime, float]]) -> tuple[int, Optional[float]]:
@@ -87,7 +122,7 @@ def compute_hourly_heatmap(
     grid = [[0.0 for _ in range(24)] for _ in range(7)]
     for pts in series_map.values():
         for i in range(1, len(pts)):
-            t1, v1 = pts[i - 1]
+            _, v1 = pts[i - 1]
             t2, v2 = pts[i]
             drop = v1 - v2
             if 0.0 < drop <= 0.99:
@@ -97,16 +132,18 @@ def compute_hourly_heatmap(
 
 
 class TimeSeriesChartWidget(QWidget):
-    """Pure-QPainter multi-series quota chart with hover crosshair."""
+    """Pure-QPainter multi-series quota chart with closest-line hover highlighting."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setMinimumHeight(180)
+        self.setMinimumHeight(190)
         self.setMouseTracking(True)
         self._series: list[tuple[str, QColor, list[tuple[datetime, float]]]] = []
         self._t_min: Optional[datetime] = None
         self._t_max: Optional[datetime] = None
         self._hover_x: Optional[float] = None
+        self._hovered_idx: Optional[int] = None
+        self._hovered_pt: Optional[tuple[datetime, float]] = None
 
     def set_series(
         self,
@@ -117,6 +154,8 @@ class TimeSeriesChartWidget(QWidget):
         self._series = series
         self._t_min = t_min
         self._t_max = t_max
+        self._hovered_idx = None
+        self._hovered_pt = None
         self.update()
 
     def _plot_rect(self) -> QRectF:
@@ -127,25 +166,53 @@ class TimeSeriesChartWidget(QWidget):
         pos = event.position()
         if not rect.contains(pos) or not self._series or not self._t_min or not self._t_max:
             self._hover_x = None
+            self._hovered_idx = None
+            self._hovered_pt = None
             self.update()
             return
         self._hover_x = pos.x()
-        self.update()
 
         span_s = max(1.0, (self._t_max - self._t_min).total_seconds())
         ratio = (pos.x() - rect.left()) / rect.width()
         target_ts = self._t_min.timestamp() + ratio * span_s
 
-        lines = [datetime.fromtimestamp(target_ts, tz=timezone.utc).astimezone().strftime("%b %d %H:%M")]
-        for label, _, pts in self._series:
+        best_idx: Optional[int] = None
+        best_dist = float("inf")
+        best_pt: Optional[tuple[datetime, float]] = None
+        nearest_pts: list[tuple[int, str, tuple[datetime, float]]] = []
+
+        for idx, (label, _, pts) in enumerate(self._series):
             if not pts:
                 continue
             nearest = min(pts, key=lambda p: abs(p[0].timestamp() - target_ts))
-            lines.append(f"{label}: {nearest[1] * 100:.2f}%")
+            nearest_pts.append((idx, label, nearest))
+            y_px = rect.bottom() - max(0.0, min(1.0, nearest[1])) * rect.height()
+            dist = abs(y_px - pos.y())
+            if dist < best_dist:
+                best_dist = dist
+                best_idx = idx
+                best_pt = nearest
+
+        self._hovered_idx = best_idx
+        self._hovered_pt = best_pt
+        self.update()
+
+        ts_str = datetime.fromtimestamp(target_ts, tz=timezone.utc).astimezone().strftime("%b %d %H:%M")
+        lines = [ts_str]
+        if best_idx is not None:
+            for idx, label, pt in nearest_pts:
+                if idx == best_idx:
+                    lines.insert(1, f"▶ {label}: {pt[1] * 100:.4f}%")
+                    break
+        for idx, label, pt in nearest_pts:
+            if idx != best_idx:
+                lines.append(f"   {label}: {pt[1] * 100:.2f}%")
         QToolTip.showText(event.globalPosition().toPoint(), "\n".join(lines), self)
 
     def leaveEvent(self, event) -> None:  # noqa: N802
         self._hover_x = None
+        self._hovered_idx = None
+        self._hovered_pt = None
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -153,7 +220,6 @@ class TimeSeriesChartWidget(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self._plot_rect()
 
-        # Grid lines
         grid_pen = QPen(QColor(128, 128, 128, 45), 1.0)
         text_color = self.palette().text().color()
         small_font = QFont(self.font())
@@ -165,7 +231,11 @@ class TimeSeriesChartWidget(QWidget):
             painter.setPen(grid_pen)
             painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
             painter.setPen(QColor(160, 160, 160))
-            painter.drawText(QRectF(0, y - 7, rect.left() - 4, 14), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, f"{pct}%")
+            painter.drawText(
+                QRectF(0, y - 7, rect.left() - 4, 14),
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                f"{pct}%",
+            )
 
         if not self._series or not self._t_min or not self._t_max:
             painter.setPen(text_color)
@@ -175,7 +245,6 @@ class TimeSeriesChartWidget(QWidget):
         t0 = self._t_min.timestamp()
         span = max(1.0, self._t_max.timestamp() - t0)
 
-        # X-axis labels
         painter.setPen(QColor(160, 160, 160))
         painter.drawText(
             QRectF(rect.left(), rect.bottom() + 4, 90, 16),
@@ -188,26 +257,47 @@ class TimeSeriesChartWidget(QWidget):
             self._t_max.astimezone().strftime("%b %d %H:%M"),
         )
 
-        # Series lines
-        for _, color, pts in self._series:
+        # Draw non-hovered series first, then hovered series on top
+        order = sorted(
+            range(len(self._series)),
+            key=lambda i: 1 if i == self._hovered_idx else 0,
+        )
+        for idx in order:
+            _, color, pts = self._series[idx]
             if len(pts) < 2:
                 continue
             path = QPainterPath()
-            started = False
-            for dt, val in pts:
+            for i, (dt, val) in enumerate(pts):
                 x = rect.left() + ((dt.timestamp() - t0) / span) * rect.width()
                 y = rect.bottom() - max(0.0, min(1.0, val)) * rect.height()
-                if not started:
+                if i == 0:
                     path.moveTo(x, y)
-                    started = True
                 else:
                     path.lineTo(x, y)
-            painter.setPen(QPen(color, 2.0, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
+
+            draw_color = QColor(color)
+            if self._hovered_idx is not None and idx != self._hovered_idx:
+                draw_color.setAlpha(75)
+                width = 1.5
+            elif idx == self._hovered_idx:
+                width = 3.5
+            else:
+                width = 2.0
+
+            painter.setPen(QPen(draw_color, width, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap, Qt.PenJoinStyle.RoundJoin))
             painter.drawPath(path)
 
         if self._hover_x is not None:
-            painter.setPen(QPen(QColor(200, 200, 200, 140), 1.0, Qt.PenStyle.DashLine))
+            painter.setPen(QPen(QColor(200, 200, 200, 130), 1.0, Qt.PenStyle.DashLine))
             painter.drawLine(QPointF(self._hover_x, rect.top()), QPointF(self._hover_x, rect.bottom()))
+
+        if self._hovered_idx is not None and self._hovered_pt is not None:
+            _, color, _ = self._series[self._hovered_idx]
+            px = rect.left() + ((self._hovered_pt[0].timestamp() - t0) / span) * rect.width()
+            py = rect.bottom() - max(0.0, min(1.0, self._hovered_pt[1])) * rect.height()
+            painter.setBrush(color)
+            painter.setPen(QPen(Qt.GlobalColor.white, 1.5))
+            painter.drawEllipse(QPointF(px, py), 4.5, 4.5)
 
 
 class UsageHeatmapWidget(QWidget):
@@ -279,7 +369,7 @@ class UsageHeatmapWidget(QWidget):
 
 
 class AnalyticsTabView(QWidget):
-    """Analytics dashboard tab with time-series chart, burn-rate forecast, heatmap, and cycle efficiency."""
+    """Analytics dashboard view with time-series chart, burn-rate forecast, heatmap, and cycle efficiency."""
 
     def __init__(self, storage: HistoryStorage, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
@@ -290,7 +380,6 @@ class AnalyticsTabView(QWidget):
         root.setContentsMargins(6, 8, 6, 6)
         root.setSpacing(8)
 
-        # Controls bar
         ctrl_row = QHBoxLayout()
         ctrl_row.addWidget(QLabel("Range:"))
         self.range_combo = QComboBox()
@@ -302,7 +391,6 @@ class AnalyticsTabView(QWidget):
         ctrl_row.addStretch(1)
         root.addLayout(ctrl_row)
 
-        # Scrollable content
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -388,18 +476,28 @@ class AnalyticsTabView(QWidget):
             if (pid, bid) not in self._disabled_keys:
                 visible_series.append((label, color, pts))
 
-            hrs_left = compute_burn_rate_hours(pts)
-            if hrs_left is not None:
-                h_i = int(hrs_left)
-                m_i = int((hrs_left - h_i) * 60)
-                forecast_lines.append(f"• {label}: ~{h_i}h {m_i}m until 0% at current pace")
+            details = compute_burn_rate_details(pts)
+            if details is not None:
+                span_str = format_short_duration(details.span_hours)
+                if details.hours_to_empty is not None:
+                    eta_str = format_short_duration(details.hours_to_empty)
+                    forecast_lines.append(
+                        f"• {label}: -{details.rate_pct_per_hour:.2f}%/hr  |  ~{eta_str} to 0%  "
+                        f"({details.sample_count} samples over {span_str})"
+                    )
+                else:
+                    forecast_lines.append(
+                        f"• {label}: Steady (0.00%/hr over {span_str}, {details.sample_count} samples)"
+                    )
 
             cycles, avg_used = compute_reset_cycle_efficiency(pts)
             if cycles > 0 and avg_used is not None:
                 eff_lines.append(f"• {label}: avg {avg_used * 100:.1f}% used across {cycles} reset cycle(s)")
 
         self.chart.set_series(visible_series, since, now)
-        self.forecast_label.setText("\n".join(forecast_lines) if forecast_lines else "No active downward burn rate detected in this window.")
+        self.forecast_label.setText(
+            "\n".join(forecast_lines) if forecast_lines else "Need at least 2 snapshots per bucket to compute burn rate."
+        )
         self.heatmap.set_grid(compute_hourly_heatmap(series_map))
         self.eff_label.setText("\n".join(eff_lines) if eff_lines else "No completed reset cycles recorded in this window yet.")
 

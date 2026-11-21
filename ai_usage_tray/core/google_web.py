@@ -8,26 +8,15 @@ from typing import Any, Optional
 
 import requests
 
-from ai_usage_tray.core.chromium_crypto import ChromiumCookie, read_chromium_cookie_records
-
-BROWSER_COOKIE_PATTERNS = (
-    ("~/.config/yandex-browser/*/Cookies", ("yandex", "Yandex", "yandex-browser", "chrome", "chromium")),
-    ("~/.config/google-chrome/*/Cookies", ("chrome", "chromium")),
-    ("~/.config/chromium/*/Cookies", ("chromium", "chrome")),
-    ("~/.config/BraveSoftware/Brave-Browser/*/Cookies", ("brave", "Brave", "chrome", "chromium")),
-    ("~/.config/vivaldi/*/Cookies", ("vivaldi", "Vivaldi", "chrome", "chromium")),
+from ai_usage_tray.core.chromium_crypto import (
+    ChromiumCookie,
+    find_browser_cookie_records,
 )
 
 
 def find_google_browser_cookies() -> tuple[list[ChromiumCookie], Optional[str]]:
     """Find Google session cookies from installed Chromium-based browsers."""
-    for pattern, apps in BROWSER_COOKIE_PATTERNS:
-        for db_path in sorted(glob.glob(os.path.expanduser(pattern))):
-            records = read_chromium_cookie_records(db_path, "google.com", applications=apps)
-            names = {r.name for r in records}
-            if "SID" in names or "__Secure-1PSID" in names:
-                return records, db_path
-    return [], None
+    return find_browser_cookie_records("google.com", ("SID", "__Secure-1PSID"))
 
 
 def build_google_session(records: list[ChromiumCookie], origin: str) -> requests.Session:

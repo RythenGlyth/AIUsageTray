@@ -183,15 +183,41 @@ class QuotaBucketCard(QFrame):
         if history and len(history) >= 2:
             if isinstance(history[0], tuple):
                 pts = history  # type: ignore[assignment]
-                values = [v for _, v in pts]
+                raw_values = [v for _, v in pts]
+                if len(raw_values) > 60:
+                    step = len(raw_values) / 60.0
+                    values = [raw_values[int(i * step)] for i in range(59)] + [raw_values[-1]]
+                else:
+                    values = raw_values
                 t_start = pts[0][0].astimezone().strftime("%b %d %H:%M")
                 t_end = pts[-1][0].astimezone().strftime("%b %d %H:%M")
                 if pts[0][0].astimezone().date() == pts[-1][0].astimezone().date():
                     t_end = pts[-1][0].astimezone().strftime("%H:%M")
                 tooltip = (
-                    f"Trend ({len(values)} samples): {t_start} → {t_end}\n"
-                    f"{values[0] * 100:.2f}% → {values[-1] * 100:.2f}%"
+                    f"Trend ({len(pts)} samples): {t_start} → {t_end}\n"
+                    f"{raw_values[0] * 100:.2f}% → {raw_values[-1] * 100:.2f}%"
                 )
+
+                from ai_usage_tray.ui.analytics import compute_burn_rate_details, format_short_duration
+
+                details = compute_burn_rate_details(pts)
+                if details is not None and details.hours_to_empty is not None:
+                    eta_str = format_short_duration(details.hours_to_empty)
+                    pace_text = f"Pace: ~{eta_str} to 0% (-{details.rate_pct_per_hour:.1f}%/hr)"
+                    pace_color = "rgba(170, 170, 170, 0.95)"
+                    if bucket.reset_time is not None:
+                        from datetime import datetime, timezone
+
+                        hrs_to_reset = (bucket.reset_time - datetime.now(timezone.utc)).total_seconds() / 3600.0
+                        if 0 < details.hours_to_empty < hrs_to_reset:
+                            pace_text = f"⚠ ~{eta_str} to 0% (before reset, -{details.rate_pct_per_hour:.1f}%/hr)"
+                            pace_color = "#f39c12"
+                    pace_lbl = QLabel(pace_text)
+                    p_font = QFont(pace_lbl.font())
+                    p_font.setPointSize(8)
+                    pace_lbl.setFont(p_font)
+                    pace_lbl.setStyleSheet(f"color: {pace_color};")
+                    layout.addWidget(pace_lbl)
             else:
                 values = list(history)  # type: ignore[arg-type]
                 tooltip = f"Recent quota trend ({len(values)} samples)"

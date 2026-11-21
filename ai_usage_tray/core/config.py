@@ -39,6 +39,8 @@ class ProviderConfig:
 class AppConfig:
     tray_provider: str = "auto"
     tray_bucket_id: str = ""
+    trend_window_hours: int = 24
+    tab_order: list[str] = field(default_factory=list)
     antigravity: ProviderConfig = field(
         default_factory=lambda: ProviderConfig(enabled=True, mode="auto", poll_interval_s=60)
     )
@@ -91,6 +93,12 @@ class ConfigManager:
         if isinstance(raw, dict):
             cfg.tray_provider = str(raw.get("tray_provider", cfg.tray_provider))
             cfg.tray_bucket_id = str(raw.get("tray_bucket_id", cfg.tray_bucket_id))
+            try:
+                cfg.trend_window_hours = max(1, int(raw.get("trend_window_hours", cfg.trend_window_hours)))
+            except Exception:
+                pass
+            if isinstance(raw.get("tab_order"), list):
+                cfg.tab_order = [str(x) for x in raw["tab_order"]]
 
         for pid, target in (
             ("antigravity", cfg.antigravity),
@@ -115,6 +123,8 @@ class ConfigManager:
         payload = {
             "tray_provider": self.config.tray_provider,
             "tray_bucket_id": self.config.tray_bucket_id,
+            "trend_window_hours": self.config.trend_window_hours,
+            "tab_order": self.config.tab_order,
             "antigravity": asdict(self.config.antigravity),
             "openai_codex": asdict(self.config.openai_codex),
             "claude": asdict(self.config.claude),

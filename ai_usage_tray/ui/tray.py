@@ -69,6 +69,7 @@ class AIUsageTrayApp:
 
         self.coordinator = RefreshCoordinator(registry, config_manager, storage)
         self.panel = UsagePopupPanel(
+            config_manager=config_manager,
             registry=registry,
             storage=storage,
             on_refresh_all=lambda: self.coordinator.refresh_all(force=True),
@@ -136,6 +137,7 @@ class AIUsageTrayApp:
         dlg.show()
 
     def _on_settings_saved(self) -> None:
+        self.panel.refresh_provider_states()
         self._update_tray_summary()
         self.coordinator.reconfigure_timers()
         self.coordinator.refresh_all(force=True)
