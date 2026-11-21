@@ -158,7 +158,7 @@ class ProviderTabView(QWidget):
                 self.body_layout.addWidget(desc_label)
 
             for bucket in group.buckets:
-                hist = self.storage.get_bucket_history(self.provider_id, bucket.bucket_id, limit=24)
+                hist = self.storage.get_bucket_history_points(self.provider_id, bucket.bucket_id, limit=24)
                 card = QuotaBucketCard(bucket, history=hist)
                 self.body_layout.addWidget(card)
 
@@ -227,7 +227,9 @@ class UsagePopupPanel(QWidget):
 
         layout.addLayout(header)
 
-        # Provider tabs
+        # Provider tabs + Analytics tab
+        from ai_usage_tray.ui.analytics import AnalyticsTabView
+
         self.tabs = QTabWidget()
         self.tab_views: dict[str, ProviderTabView] = {}
         for provider in self.registry.all():
@@ -238,6 +240,9 @@ class UsagePopupPanel(QWidget):
             )
             self.tab_views[provider.provider_id] = view
             self.tabs.addTab(view, provider.display_name)
+        self.analytics_tab = AnalyticsTabView(storage=self.storage)
+        self.tabs.addTab(self.analytics_tab, "Analytics")
+        self.tabs.currentChanged.connect(lambda idx: self.analytics_tab.refresh() if self.tabs.widget(idx) is self.analytics_tab else None)
         layout.addWidget(self.tabs, 1)
 
         outer.addWidget(container)
@@ -246,12 +251,16 @@ class UsagePopupPanel(QWidget):
         view = self.tab_views.get(snapshot.provider_id)
         if view is not None:
             view.update_snapshot(snapshot)
+        if self.tabs.currentWidget() is self.analytics_tab:
+            self.analytics_tab.refresh()
         self.status_label.setText(datetime.now(timezone.utc).astimezone().strftime("Last sync %H:%M:%S"))
 
     def set_refreshing(self, provider_id: str) -> None:
         self.status_label.setText(f"Refreshing {provider_id}...")
 
     def show_window(self) -> None:
+        if self.tabs.currentWidget() is self.analytics_tab:
+            self.analytics_tab.refresh()
         self.show()
         self.raise_()
         self.activateWindow()

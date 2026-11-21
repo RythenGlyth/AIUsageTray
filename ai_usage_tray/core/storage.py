@@ -76,18 +76,76 @@ class HistoryStorage:
             )
             conn.commit()
 
-    def get_bucket_history(self, provider_id: str, bucket_id: str, limit: int = 24) -> list[float]:
+    def get_bucket_history_points(
+        self,
+        provider_id: str,
+        bucket_id: str,
+        limit: int = 24,
+    ) -> list[tuple[datetime, float]]:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT remaining_fraction FROM quota_snapshots
+                SELECT fetched_at, remaining_fraction FROM quota_snapshots
                 WHERE provider_id = ? AND bucket_id = ?
                 ORDER BY id DESC LIMIT ?
                 """,
                 (provider_id, bucket_id, limit),
             ).fetchall()
-        values = [float(Decimal(r[0])) for r in reversed(rows)]
-        return values
+        points: list[tuple[datetime, float]] = []
+        for ts_str, frac_str in reversed(rows):
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                points.append((dt, float(Decimal(frac_str))))
+            except Exception:
+                continue
+        return points
+
+    def get_bucket_history(self, provider_id: str, bucket_id: str, limit: int = 24) -> list[float]:
+        return [val for _, val in self.get_bucket_history_points(provider_id, bucket_id, limit=limit)]
+
+    def get_all_series_since(self, since: datetime) -> dict[tuple[str, str], list[tuple[datetime, float]]]:
+        """Return {(provider_id, bucket_id): [(dt, remaining_float), ...]} since the given UTC datetime."""
+        since_iso = since.astimezone(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT fetched_at, provider_id, bucket_id, remaining_fraction
+                FROM quota_snapshots
+                WHERE fetched_at >= ?
+                ORDER BY id ASC
+                """,
+                (since_iso,),
+            ).fetchall()
+        series: dict[tuple[str, str], list[tuple[datetime, float]]] = {}
+        for ts_str, pid, bid, frac_str in rows:
+            try:
+                dt = datetime.fromisoformat(ts_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                series.setdefault((str(pid), str(bid)), []).append((dt, float(Decimal(frac_str))))
+            except Exception:
+                continue
+        return series
+
+    def get_token_usage_summary(self, since: datetime) -> list[tuple[str, str, int, int, int]]:
+        """Return [(provider_id, model, input_tokens, output_tokens, cached_tokens), ...] since datetime."""
+        since_iso = since.astimezone(timezone.utc).isoformat()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT provider_id, model,
+                       COALESCE(SUM(input_tokens), 0),
+                       COALESCE(SUM(output_tokens), 0),
+                       COALESCE(SUM(cached_tokens), 0)
+                FROM token_usage
+                WHERE timestamp >= ?
+                GROUP BY provider_id, model
+                """,
+                (since_iso,),
+            ).fetchall()
+        return [(str(r[0]), str(r[1]), int(r[2]), int(r[3]), int(r[4])) for r in rows]
 
     def record_token_usage(self, record: TokenUsageRecord) -> None:
         """Store a token usage event (extensibility hook for future token tracking)."""

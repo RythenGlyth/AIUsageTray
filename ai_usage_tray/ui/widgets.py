@@ -181,8 +181,22 @@ class QuotaBucketCard(QFrame):
         bottom_row.addWidget(reset_label, 1)
 
         if history and len(history) >= 2:
-            spark = MiniSparkline(history, color)
-            spark.setToolTip("Recent quota trend")
+            if isinstance(history[0], tuple):
+                pts = history  # type: ignore[assignment]
+                values = [v for _, v in pts]
+                t_start = pts[0][0].astimezone().strftime("%b %d %H:%M")
+                t_end = pts[-1][0].astimezone().strftime("%b %d %H:%M")
+                if pts[0][0].astimezone().date() == pts[-1][0].astimezone().date():
+                    t_end = pts[-1][0].astimezone().strftime("%H:%M")
+                tooltip = (
+                    f"Trend ({len(values)} samples): {t_start} → {t_end}\n"
+                    f"{values[0] * 100:.2f}% → {values[-1] * 100:.2f}%"
+                )
+            else:
+                values = list(history)  # type: ignore[arg-type]
+                tooltip = f"Recent quota trend ({len(values)} samples)"
+            spark = MiniSparkline(values, color)
+            spark.setToolTip(tooltip)
             bottom_row.addWidget(spark, 0, Qt.AlignmentFlag.AlignRight)
 
         layout.addLayout(bottom_row)
