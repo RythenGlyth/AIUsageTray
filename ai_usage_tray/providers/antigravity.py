@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import glob
 import json
+import os
 import re
 import subprocess
 import sys
@@ -261,8 +263,69 @@ def _discover_macos_servers() -> list[tuple[LocalLanguageServerInfo, list[int]]]
     return discovered
 
 
-def discover_local_language_servers() -> list[tuple[LocalLanguageServerInfo, list[int]]]:
-    """Discover running Antigravity language_server instances and their listening ports."""
+def _is_pid_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def discover_antigravity_hub_daemons(
+    daemon_dir: Optional[str] = None,
+) -> list[tuple[LocalLanguageServerInfo, list[int]]]:
+    """Discover running Antigravity VS Code extension `agy --hub` daemons via `~/.gemini/antigravity/daemon/hub_*.json`."""
+    target_dir = daemon_dir or os.path.expanduser("~/.gemini/antigravity/daemon")
+    if not os.path.isdir(target_dir):
+        return []
+
+    hub_files = glob.glob(os.path.join(target_dir, "hub_*.json"))
+    hub_files.sort(key=lambda p: os.path.getmtime(p) if os.path.exists(p) else 0.0, reverse=True)
+
+    discovered: list[tuple[LocalLanguageServerInfo, list[int]]] = []
+    for path in hub_files:
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+
+        csrf_token = data.get("csrfToken")
+        pid_val = data.get("pid")
+        if not isinstance(csrf_token, str) or not csrf_token or pid_val is None:
+            continue
+        try:
+            pid = int(pid_val)
+        except (ValueError, TypeError):
+            continue
+        if not _is_pid_alive(pid):
+            continue
+
+        ports: list[int] = []
+        for key in ("httpsPort", "httpPort"):
+            port_val = data.get(key)
+            if isinstance(port_val, int) and port_val > 0 and port_val not in ports:
+                ports.append(port_val)
+        if not ports:
+            continue
+
+        discovered.append(
+            (LocalLanguageServerInfo(pid=pid, csrf_token=csrf_token, explicit_port=ports[0]), ports)
+        )
+    return discovered
+
+
+def _discover_process_language_servers() -> list[tuple[LocalLanguageServerInfo, list[int]]]:
     if sys.platform == "win32":
         return _discover_windows_servers()
     if sys.platform == "darwin":
@@ -298,6 +361,25 @@ def discover_local_language_servers() -> list[tuple[LocalLanguageServerInfo, lis
         if ports:
             discovered.append((srv, ports))
     return discovered
+
+
+def discover_local_language_servers() -> list[tuple[LocalLanguageServerInfo, list[int]]]:
+    """Discover running Antigravity language_server and VS Code extension `agy --hub` instances."""
+    combined: list[tuple[LocalLanguageServerInfo, list[int]]] = []
+    by_pid: dict[int, tuple[LocalLanguageServerInfo, list[int]]] = {}
+
+    for srv, ports in [*_discover_process_language_servers(), *discover_antigravity_hub_daemons()]:
+        if srv.pid in by_pid:
+            existing_ports = by_pid[srv.pid][1]
+            for p in ports:
+                if p not in existing_ports:
+                    existing_ports.append(p)
+        else:
+            entry = (srv, list(ports))
+            by_pid[srv.pid] = entry
+            combined.append(entry)
+
+    return combined
 
 
 def parse_retrieve_user_quota_summary(payload: dict[str, Any]) -> ProviderUsageSnapshot:

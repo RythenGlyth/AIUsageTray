@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -62,6 +64,62 @@ def _known_codex_paths() -> tuple[str, ...]:
     )
 
 
+def _vscode_extension_roots() -> tuple[str, ...]:
+    return (
+        os.path.expanduser("~/.vscode/extensions"),
+        os.path.expanduser("~/.vscode-insiders/extensions"),
+        os.path.expanduser("~/.vscode-server/extensions"),
+        os.path.expanduser("~/.cursor/extensions"),
+        os.path.expanduser("~/.windsurf/extensions"),
+    )
+
+
+def _extension_version_key(dirname: str) -> tuple[tuple[int, ...], str]:
+    match = re.search(r"openai\.chatgpt-(\d+(?:\.\d+)*)", dirname)
+    if not match:
+        return ((), dirname)
+    parts = tuple(int(p) for p in match.group(1).split("."))
+    return (parts, dirname)
+
+
+def _find_vscode_codex_binaries(roots: Optional[tuple[str, ...]] = None) -> list[str]:
+    """Return candidate codex binaries bundled in VS Code / Cursor ChatGPT extensions, newest first."""
+    exe_name = "codex.exe" if sys.platform == "win32" else "codex"
+    candidates: list[str] = []
+    for root in roots or _vscode_extension_roots():
+        if not os.path.isdir(root):
+            continue
+        obsolete: dict[str, Any] = {}
+        obsolete_path = os.path.join(root, ".obsolete")
+        if os.path.isfile(obsolete_path):
+            try:
+                with open(obsolete_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    obsolete = data
+            except Exception:
+                pass
+
+        try:
+            ext_dirs = [
+                d
+                for d in os.listdir(root)
+                if d.startswith("openai.chatgpt-")
+                and not obsolete.get(d)
+                and os.path.isdir(os.path.join(root, d))
+            ]
+        except OSError:
+            continue
+
+        ext_dirs.sort(key=_extension_version_key, reverse=True)
+        for d in ext_dirs:
+            pattern = os.path.join(root, d, "bin", "*", exe_name)
+            for match in sorted(glob.glob(pattern)):
+                if os.path.isfile(match) and os.access(match, os.X_OK):
+                    candidates.append(match)
+    return candidates
+
+
 def _window_label(duration_mins: Optional[int], default_label: str) -> tuple[str, str]:
     if duration_mins is None:
         return default_label, ""
@@ -84,7 +142,7 @@ def _epoch_to_datetime(ts: Any) -> Optional[datetime]:
 
 
 def find_codex_binary(configured_path: str = "", allow_slow_search: bool = True) -> Optional[str]:
-    """Locate the codex CLI binary via configured path, PATH, known app paths, or bounded search."""
+    """Locate the codex CLI binary via configured path, PATH, known app paths, VS Code extensions, or bounded search."""
     if configured_path and os.path.isfile(configured_path) and os.access(configured_path, os.X_OK):
         return configured_path
 
@@ -95,6 +153,10 @@ def find_codex_binary(configured_path: str = "", allow_slow_search: bool = True)
     for candidate in _known_codex_paths():
         if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
             return candidate
+
+    vscode_bins = _find_vscode_codex_binaries()
+    if vscode_bins:
+        return vscode_bins[0]
 
     if not allow_slow_search or sys.platform == "win32":
         return None

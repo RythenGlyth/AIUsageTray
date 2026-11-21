@@ -1,6 +1,9 @@
+import json
+import os
 from decimal import Decimal
 
 from ai_usage_tray.providers.antigravity import (
+    discover_antigravity_hub_daemons,
     parse_ps_aux_for_antigravity,
     parse_retrieve_user_quota_summary,
     parse_ss_ports_for_pid,
@@ -78,3 +81,26 @@ def test_parse_retrieve_user_quota_summary_5_buckets():
     assert buckets[0].remaining_percent_str == "99.68221%"
     assert buckets[1].remaining_percent_str == "98.88774%"
     assert buckets[2].remaining_percent_str == "100%"
+
+
+def test_discover_antigravity_hub_daemons(tmp_path):
+    live_pid = os.getpid()
+    dead_pid = 99999999
+
+    old_hub = tmp_path / "hub_40001.json"
+    old_hub.write_text(json.dumps({"pid": live_pid, "httpsPort": 40002, "httpPort": 40001, "csrfToken": "tok-old"}))
+    os.utime(old_hub, (1000, 1000))
+
+    new_hub = tmp_path / "hub_43113.json"
+    new_hub.write_text(json.dumps({"pid": live_pid, "httpsPort": 45415, "httpPort": 43113, "csrfToken": "tok-new"}))
+    os.utime(new_hub, (2000, 2000))
+
+    dead_hub = tmp_path / "hub_49999.json"
+    dead_hub.write_text(json.dumps({"pid": dead_pid, "httpsPort": 49998, "httpPort": 49999, "csrfToken": "tok-dead"}))
+
+    found = discover_antigravity_hub_daemons(daemon_dir=str(tmp_path))
+    assert len(found) == 2
+    assert found[0][0].csrf_token == "tok-new"
+    assert found[0][1] == [45415, 43113]
+    assert found[1][0].csrf_token == "tok-old"
+    assert found[1][1] == [40002, 40001]

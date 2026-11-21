@@ -1,6 +1,11 @@
+import json
+import os
+import stat
+import sys
 from decimal import Decimal
 
 from ai_usage_tray.providers.openai_codex import (
+    _find_vscode_codex_binaries,
     parse_codex_app_server_result,
     parse_wham_usage_response,
 )
@@ -54,3 +59,28 @@ def test_parse_wham_usage_response():
     assert snap.plan_name == "Pro"
     assert snap.all_buckets[0].remaining_percent_str == "75%"
     assert snap.all_buckets[1].remaining_percent_str == "90%"
+
+
+def test_find_vscode_codex_binaries_respects_obsolete_and_picks_latest(tmp_path):
+    exe_name = "codex.exe" if sys.platform == "win32" else "codex"
+    ext_root = tmp_path / "extensions"
+    ext_root.mkdir()
+
+    def make_bin(dirname: str) -> str:
+        bin_dir = ext_root / dirname / "bin" / "linux-x86_64"
+        bin_dir.mkdir(parents=True)
+        target = bin_dir / exe_name
+        target.write_text("#!/bin/sh\n")
+        target.chmod(target.stat().st_mode | stat.S_IEXEC)
+        return str(target)
+
+    make_bin("openai.chatgpt-26.1106.51428-linux-x64")
+    active_mid = make_bin("openai.chatgpt-26.1117.31558-linux-x64")
+    obsolete_new = "openai.chatgpt-26.1117.41037-linux-x64"
+    make_bin(obsolete_new)
+
+    (ext_root / ".obsolete").write_text(json.dumps({obsolete_new: True}))
+
+    found = _find_vscode_codex_binaries(roots=(str(ext_root),))
+    assert found[0] == active_mid
+    assert all(obsolete_new not in p for p in found)
