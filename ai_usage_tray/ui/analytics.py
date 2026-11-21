@@ -10,31 +10,38 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QScrollArea,
+    QSpinBox,
+    QSizePolicy,
     QToolTip,
     QVBoxLayout,
     QWidget,
 )
 
 from ai_usage_tray.core.storage import HistoryStorage
+from ai_usage_tray.core.models import ProviderUsageSnapshot
 
 SERIES_PALETTE = (
-    QColor("#3498db"),  # Blue
-    QColor("#2ecc71"),  # Emerald
-    QColor("#e67e22"),  # Orange
-    QColor("#9b59b6"),  # Purple
-    QColor("#1abc9c"),  # Teal
-    QColor("#e74c3c"),  # Red
-    QColor("#f1c40f"),  # Yellow
-    QColor("#fd79a8"),  # Pink
-    QColor("#00cec9"),  # Cyan
-    QColor("#a29bfe"),  # Periwinkle
-    QColor("#fab1a0"),  # Peach
-    QColor("#55efc4"),  # Mint
-    QColor("#ffeaa7"),  # Cream
-    QColor("#ff7675"),  # Coral
+    QColor("#3b82f6"),  # Blue
+    QColor("#10b981"),  # Emerald
+    QColor("#f97316"),  # Orange
+    QColor("#f43f5e"),  # Rose
+    QColor("#a855f7"),  # Violet
+    QColor("#eab308"),  # Amber
+    QColor("#06b6d4"),  # Cyan
+    QColor("#84cc16"),  # Lime
+    QColor("#ec4899"),  # Pink
+    QColor("#38bdf8"),  # Sky
+    QColor("#818cf8"),  # Indigo
+    QColor("#ef4444"),  # Red
+    QColor("#2dd4bf"),  # Teal
+    QColor("#facc15"),  # Gold
+    QColor("#fb7185"),  # Coral
+    QColor("#34d399"),  # Mint
 )
 
 DAYS_SHORT = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
@@ -82,6 +89,21 @@ def compute_burn_rate_hours(points: list[tuple[datetime, float]]) -> Optional[fl
     """Estimate hours until 0% remaining from recent downward consumption slope."""
     details = compute_burn_rate_details(points)
     return details.hours_to_empty if details is not None else None
+
+
+def compute_average_consumption_rate(points: list[tuple[datetime, float]]) -> Optional[float]:
+    """Compute average consumption rate (%/hr) across resets for a time window."""
+    if len(points) < 2:
+        return None
+    dt_hours = (points[-1][0] - points[0][0]).total_seconds() / 3600.0
+    if dt_hours <= 0.01:
+        return None
+    total_drop = 0.0
+    for i in range(1, len(points)):
+        diff = points[i - 1][1] - points[i][1]
+        if diff > 0.0:
+            total_drop += diff
+    return (total_drop / dt_hours) * 100.0
 
 
 def format_short_duration(hours: float) -> str:
@@ -136,11 +158,12 @@ class TimeSeriesChartWidget(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setMinimumHeight(190)
+        self.setMinimumHeight(230)
         self.setMouseTracking(True)
         self._series: list[tuple[str, QColor, list[tuple[datetime, float]]]] = []
         self._t_min: Optional[datetime] = None
         self._t_max: Optional[datetime] = None
+        self.empty_message = "Collecting quota snapshots…"
         self._hover_x: Optional[float] = None
         self._hovered_idx: Optional[int] = None
         self._hovered_pt: Optional[tuple[datetime, float]] = None
@@ -202,7 +225,7 @@ class TimeSeriesChartWidget(QWidget):
         if best_idx is not None:
             for idx, label, pt in nearest_pts:
                 if idx == best_idx:
-                    lines.insert(1, f"▶ {label}: {pt[1] * 100:.4f}%")
+                    lines.insert(1, f"▶ {label}: {pt[1] * 100:.1f}% remaining")
                     break
         for idx, label, pt in nearest_pts:
             if idx != best_idx:
@@ -223,7 +246,7 @@ class TimeSeriesChartWidget(QWidget):
         grid_pen = QPen(QColor(128, 128, 128, 45), 1.0)
         text_color = self.palette().text().color()
         small_font = QFont(self.font())
-        small_font.setPointSize(7)
+        small_font.setPointSize(9)
         painter.setFont(small_font)
 
         for pct in (0, 25, 50, 75, 100):
@@ -239,23 +262,23 @@ class TimeSeriesChartWidget(QWidget):
 
         if not self._series or not self._t_min or not self._t_max:
             painter.setPen(text_color)
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "Collecting quota snapshots...")
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, self.empty_message)
             return
 
         t0 = self._t_min.timestamp()
         span = max(1.0, self._t_max.timestamp() - t0)
 
         painter.setPen(QColor(160, 160, 160))
-        painter.drawText(
-            QRectF(rect.left(), rect.bottom() + 4, 90, 16),
-            Qt.AlignmentFlag.AlignLeft,
-            self._t_min.astimezone().strftime("%b %d %H:%M"),
-        )
-        painter.drawText(
-            QRectF(rect.right() - 90, rect.bottom() + 4, 90, 16),
-            Qt.AlignmentFlag.AlignRight,
-            self._t_max.astimezone().strftime("%b %d %H:%M"),
-        )
+        tick_count = 4 if rect.width() >= 480 else 2
+        for i in range(tick_count + 1):
+            ratio = i / tick_count
+            dt = self._t_min + (self._t_max - self._t_min) * ratio
+            text = dt.astimezone().strftime("%b %d %H:%M" if span > 86400 else "%H:%M")
+            x = rect.left() + ratio * rect.width()
+            width = min(110, rect.width() / tick_count)
+            left = max(rect.left(), min(x - width / 2, rect.right() - width))
+            painter.drawText(QRectF(left, rect.bottom() + 4, width, 20),
+                             Qt.AlignmentFlag.AlignCenter, text)
 
         # Draw non-hovered series first, then hovered series on top
         order = sorted(
@@ -305,7 +328,7 @@ class UsageHeatmapWidget(QWidget):
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
-        self.setFixedHeight(124)
+        self.setFixedHeight(170)
         self.setMouseTracking(True)
         self._grid: list[list[float]] = [[0.0 for _ in range(24)] for _ in range(7)]
         self._max_val: float = 0.01
@@ -341,7 +364,7 @@ class UsageHeatmapWidget(QWidget):
         ch = rect.height() / 7.0
 
         small_font = QFont(self.font())
-        small_font.setPointSize(7)
+        small_font.setPointSize(9)
         painter.setFont(small_font)
 
         for r in range(7):
@@ -368,156 +391,430 @@ class UsageHeatmapWidget(QWidget):
             painter.drawText(QRectF(x - 10, rect.bottom() + 2, 24, 14), Qt.AlignmentFlag.AlignCenter, f"{h:02d}")
 
 
-class AnalyticsTabView(QWidget):
-    """Analytics dashboard view with time-series chart, burn-rate forecast, heatmap, and cycle efficiency."""
+def _clear_grid(grid: QGridLayout) -> None:
+    while grid.count():
+        item = grid.takeAt(0)
+        widget = item.widget()
+        if widget is not None:
+            widget.hide()
+            widget.deleteLater()
 
-    def __init__(self, storage: HistoryStorage, parent: Optional[QWidget] = None) -> None:
+
+def _label(text: str, bold: bool = False) -> QLabel:
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setMinimumWidth(0)
+    label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+    font = QFont(label.font())
+    font.setBold(bold)
+    label.setFont(font)
+    return label
+
+
+def format_burn_rate(rate: Optional[float]) -> str:
+    if rate is None:
+        return "Insufficient history"
+    if rate < 0.05:
+        return "<0.1 pp/h" if rate > 0 else "0.0 pp/h"
+    return f"{rate:.1f} pp/h"
+
+
+def forecast_status(details: Optional[BurnRateDetails], reset: Optional[datetime],
+                    now: datetime) -> tuple[str, bool]:
+    """Keep estimates within the known reset horizon; flag only actionable risk."""
+    if reset is not None:
+        if reset.tzinfo is None:
+            reset = reset.replace(tzinfo=timezone.utc)
+        reset_hours = (reset - now).total_seconds() / 3600
+        if reset_hours <= 0:
+            return "Awaiting reset", False
+        if details is not None and details.hours_to_empty is not None:
+            if details.hours_to_empty < reset_hours:
+                return f"~{format_short_duration(details.hours_to_empty)} · May run out before reset", True
+            return "Reset expected first", False
+    if details is None:
+        return "Insufficient history", False
+    if details.hours_to_empty is None:
+        return "Steady", False
+    return f"~{format_short_duration(details.hours_to_empty)} · Reset unknown", False
+
+
+class AnalyticsTabView(QWidget):
+    """Provider-focused quota trends, actionable forecasts and optional usage patterns."""
+
+    def __init__(self, storage: HistoryStorage, parent: Optional[QWidget] = None,
+                 snapshots: Optional[dict[str, ProviderUsageSnapshot]] = None) -> None:
         super().__init__(parent)
         self.storage = storage
+        self.snapshots = snapshots if snapshots is not None else {}
         self._disabled_keys: set[tuple[str, str]] = set()
+        self._all_keys: list[tuple[str, str]] = []
+        self._expanded_keys: set[tuple[str, str]] = set()
+        self._compact = False
+        self._refreshing = False
+        self._legend_buttons: list[QPushButton] = []
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(6, 8, 6, 6)
-        root.setSpacing(8)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(12)
+        title = _label("Analytics", True)
+        font = QFont(title.font())
+        font.setPointSize(18)
+        title.setFont(font)
+        root.addWidget(title)
 
-        ctrl_row = QHBoxLayout()
-        ctrl_row.addWidget(QLabel("Range:"))
+        self.controls = QGridLayout()
+        self.controls.setSpacing(8)
+        self.provider_combo = QComboBox()
+        self.provider_combo.setMinimumWidth(0)
+        self.provider_combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.provider_combo.setMinimumContentsLength(12)
+        self.provider_combo.setAccessibleName("Provider")
+        self.provider_combo.currentIndexChanged.connect(self._provider_changed)
         self.range_combo = QComboBox()
-        for label, hours in (("6 Hours", 6), ("24 Hours", 24), ("7 Days", 168), ("30 Days", 720)):
+        self.range_combo.setAccessibleName("Time range")
+        for label, hours in (("6 Hours", 6), ("24 Hours", 24), ("7 Days", 168),
+                             ("30 Days", 720), ("1 Year", 8760), ("Custom…", -1)):
             self.range_combo.addItem(label, hours)
         self.range_combo.setCurrentIndex(1)
-        self.range_combo.currentIndexChanged.connect(self.refresh)
-        ctrl_row.addWidget(self.range_combo)
-        ctrl_row.addStretch(1)
-        root.addLayout(ctrl_row)
+        self.range_combo.currentIndexChanged.connect(self._on_range_changed)
+        self.custom_controls = QWidget()
+        custom_layout = QHBoxLayout(self.custom_controls)
+        custom_layout.setContentsMargins(0, 0, 0, 0)
+        self.custom_spin = QSpinBox()
+        self.custom_spin.setRange(1, 8760)
+        self.custom_spin.setValue(48)
+        self.custom_spin.setAccessibleName("Custom range length")
+        self.custom_spin.valueChanged.connect(self.refresh)
+        custom_layout.addWidget(self.custom_spin)
+        self.custom_unit = QComboBox()
+        self.custom_unit.addItem("Hours", 1)
+        self.custom_unit.addItem("Days", 24)
+        self.custom_unit.currentIndexChanged.connect(self.refresh)
+        custom_layout.addWidget(self.custom_unit)
+        self.custom_controls.hide()
+        self.controls.addWidget(self.provider_combo, 0, 0)
+        self.controls.addWidget(self.range_combo, 0, 1)
+        self.controls.addWidget(self.custom_controls, 1, 0, 1, 2)
+        self.controls.setColumnStretch(0, 1)
+        root.addLayout(self.controls)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget()
+        body.setMinimumWidth(0)
+        body.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.body_layout = QVBoxLayout(body)
-        self.body_layout.setContentsMargins(0, 0, 4, 0)
-        self.body_layout.setSpacing(10)
+        self.body_layout.setContentsMargins(0, 0, 6, 0)
+        self.body_layout.setSpacing(12)
 
+        chart_card = QFrame()
+        chart_layout = QVBoxLayout(chart_card)
+        chart_layout.setContentsMargins(0, 0, 0, 0)
+        chart_bar = QHBoxLayout()
+        chart_bar.addWidget(_label("Quota remaining", True), 1)
+        self.choose_btn = QPushButton("Choose series")
+        self.choose_btn.setCheckable(True)
+        chart_bar.addWidget(self.choose_btn)
+        chart_layout.addLayout(chart_bar)
         self.chart = TimeSeriesChartWidget()
-        self.body_layout.addWidget(self.chart)
+        chart_layout.addWidget(self.chart)
+        self.legend_grid = QGridLayout()
+        self.legend_grid.setSpacing(6)
+        chart_layout.addLayout(self.legend_grid)
+        self.body_layout.addWidget(chart_card)
 
-        self.legend_layout = QVBoxLayout()
-        self.legend_layout.setSpacing(2)
-        self.body_layout.addLayout(self.legend_layout)
+        self.selector = QWidget()
+        selector_layout = QVBoxLayout(self.selector)
+        selector_layout.setContentsMargins(0, 0, 0, 0)
+        selector_bar = QHBoxLayout()
+        selector_bar.addWidget(_label("Visible quotas", True), 1)
+        for text, callback in (("All", self._select_all_stats), ("Clear", self._clear_all_stats)):
+            btn = QPushButton(text)
+            btn.clicked.connect(callback)
+            selector_bar.addWidget(btn)
+        selector_layout.addLayout(selector_bar)
+        self.selector_grid = QGridLayout()
+        selector_layout.addLayout(self.selector_grid)
+        self.selector.hide()
+        self.choose_btn.toggled.connect(self.selector.setVisible)
+        self.body_layout.addWidget(self.selector)
 
-        self.forecast_title = QLabel("Burn-Rate & Time-to-Empty Forecast")
-        f_font = QFont(self.forecast_title.font())
-        f_font.setBold(True)
-        self.forecast_title.setFont(f_font)
-        self.body_layout.addWidget(self.forecast_title)
+        self.body_layout.addWidget(_label("Quota forecast", True))
+        self.body_layout.addWidget(_label("Recent burn in percentage points/hour (pp/h). Estimates assume the recent pace continues."))
+        self.forecast_grid = QGridLayout()
+        self.forecast_grid.setSpacing(8)
+        self.body_layout.addLayout(self.forecast_grid)
 
-        self.forecast_label = QLabel("Collecting data...")
-        self.forecast_label.setWordWrap(True)
-        self.forecast_label.setStyleSheet("color: rgba(180, 180, 180, 0.95);")
-        self.body_layout.addWidget(self.forecast_label)
-
-        heat_title = QLabel("Activity Heatmap (Local Time)")
-        heat_title.setFont(f_font)
-        self.body_layout.addWidget(heat_title)
-
+        self.patterns_btn = QPushButton("▸ Usage patterns")
+        self.patterns_btn.setCheckable(True)
+        self.patterns_btn.toggled.connect(self._toggle_patterns)
+        self.body_layout.addWidget(self.patterns_btn)
+        self.patterns = QWidget()
+        patterns_layout = QVBoxLayout(self.patterns)
+        patterns_layout.setContentsMargins(0, 0, 0, 0)
+        patterns_layout.addWidget(_label("Activity by local day and hour", True))
+        patterns_layout.addWidget(_label("Selected quotas only · Relative quota consumption · Less → More"))
         self.heatmap = UsageHeatmapWidget()
-        self.body_layout.addWidget(self.heatmap)
+        patterns_layout.addWidget(self.heatmap)
+        patterns_layout.addWidget(_label("Reset-cycle utilization", True))
+        self.efficiency_label = _label("")
+        patterns_layout.addWidget(self.efficiency_label)
+        self.patterns.hide()
+        self.body_layout.addWidget(self.patterns)
 
-        eff_title = QLabel("Reset-Cycle Efficiency")
-        eff_title.setFont(f_font)
-        self.body_layout.addWidget(eff_title)
-
-        self.eff_label = QLabel("No completed reset cycles recorded yet.")
-        self.eff_label.setWordWrap(True)
-        self.eff_label.setStyleSheet("color: rgba(180, 180, 180, 0.95);")
-        self.body_layout.addWidget(self.eff_label)
-
-        tok_title = QLabel("Token & Cost Breakdown")
-        tok_title.setFont(f_font)
-        self.body_layout.addWidget(tok_title)
-
-        self.token_label = QLabel("No token events recorded yet (ready for local CLI log ingestion).")
-        self.token_label.setWordWrap(True)
-        self.token_label.setStyleSheet("color: rgba(160, 160, 160, 0.90);")
-        self.body_layout.addWidget(self.token_label)
-
+        self.token_section = QWidget()
+        token_layout = QVBoxLayout(self.token_section)
+        token_layout.setContentsMargins(0, 0, 0, 0)
+        token_layout.addWidget(_label("Token usage", True))
+        self.token_label = _label("")
+        token_layout.addWidget(self.token_label)
+        self.token_section.hide()
+        self.body_layout.addWidget(self.token_section)
         self.body_layout.addStretch(1)
-        scroll.setWidget(body)
-        root.addWidget(scroll, 1)
+        self.scroll.setWidget(body)
+        root.addWidget(self.scroll, 1)
 
-    def _clear_legend(self) -> None:
-        while self.legend_layout.count():
-            item = self.legend_layout.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
+    def _toggle_patterns(self, checked: bool) -> None:
+        self.patterns.setVisible(checked)
+        self.patterns_btn.setText(("▾" if checked else "▸") + " Usage patterns")
+
+    def _provider_changed(self) -> None:
+        self.refresh()
+
+    def _on_range_changed(self) -> None:
+        self.custom_controls.setVisible(self.range_combo.currentData() == -1)
+        self.refresh()
+
+    def _selected_hours(self) -> int:
+        value = int(self.range_combo.currentData() or 24)
+        if value > 0:
+            return value
+        return max(1, self.custom_spin.value() * int(self.custom_unit.currentData() or 1))
+
+    def _provider_name(self, pid: str) -> str:
+        snapshot = self.snapshots.get(pid)
+        return snapshot.provider_name if snapshot else pid.replace("_", " ").title()
+
+    def _bucket_metadata(self, key: tuple[str, str]):
+        snapshot = self.snapshots.get(key[0])
+        if snapshot:
+            for group in snapshot.groups:
+                for bucket in group.buckets:
+                    if bucket.bucket_id == key[1]:
+                        name = bucket.display_name.replace(" Limit Remaining", "").replace("5-Hour", "5-hour")
+                        duplicates = sum(b.display_name == bucket.display_name for b in snapshot.all_buckets)
+                        if duplicates > 1:
+                            name = f"{group.display_name} · {name}"
+                        # Failed polls retain history, but their reset metadata is not reliable.
+                        return name, bucket.reset_time if not snapshot.error else None
+        return key[1].replace("_", " ").replace("-", " ").title(), None
+
+    def _series_name(self, key: tuple[str, str]) -> str:
+        return f"{self._provider_name(key[0])} · {self._bucket_metadata(key)[0]}"
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        compact = self.width() < 680
+        if compact != self._compact:
+            self._compact = compact
+            if self._all_keys:
+                self.refresh()
+
+    def _toggle_details(self, key: tuple[str, str]) -> None:
+        if key in self._expanded_keys:
+            self._expanded_keys.remove(key)
+        else:
+            self._expanded_keys.add(key)
+        self.refresh()
 
     def refresh(self) -> None:
-        hours = int(self.range_combo.currentData() or 24)
+        if self._refreshing:
+            return
+        self._refreshing = True
+        try:
+            self._refresh()
+        finally:
+            self._refreshing = False
+
+    def _refresh(self) -> None:
         now = datetime.now(timezone.utc)
+        hours = self._selected_hours()
         since = now - timedelta(hours=hours)
         series_map = self.storage.get_all_series_since(since)
+        providers = sorted(set(pid for pid, _ in series_map) | set(self.snapshots))
+        previous = self.provider_combo.currentData()
+        choices = [(self._provider_name(pid), pid) for pid in providers]
+        if providers:
+            choices.append(("Compare providers", "*"))
+        if [self.provider_combo.itemData(i) for i in range(self.provider_combo.count())] != [p for _, p in choices]:
+            self.provider_combo.blockSignals(True)
+            self.provider_combo.clear()
+            for label, pid in choices:
+                self.provider_combo.addItem(label, pid)
+            idx = self.provider_combo.findData(previous)
+            self.provider_combo.setCurrentIndex(max(0, idx))
+            self.provider_combo.blockSignals(False)
+        provider = self.provider_combo.currentData()
+        items = [(key, pts) for key, pts in sorted(series_map.items()) if provider == "*" or key[0] == provider]
+        self._all_keys = [key for key, _ in items]
+        for grid in (self.legend_grid, self.selector_grid, self.forecast_grid):
+            _clear_grid(grid)
+        self._legend_buttons = []
+        visible = []
+        colors = {key: SERIES_PALETTE[idx % len(SERIES_PALETTE)] for idx, key in enumerate(sorted(series_map))}
+        columns = 1 if self._compact else 2
+        for idx, (key, pts) in enumerate(items):
+            label = self._series_name(key)
+            color = colors[key]
+            checked = key not in self._disabled_keys
+            legend = QPushButton()
+            legend.setCheckable(True)
+            legend.setChecked(checked)
+            legend.setMinimumWidth(0)
+            legend.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+            legend.setAccessibleName(label)
+            legend_layout = QVBoxLayout(legend)
+            legend_layout.setContentsMargins(8, 5, 8, 5)
+            legend_text = _label(label if provider == "*" else self._bucket_metadata(key)[0])
+            legend_text.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+            if not checked:
+                legend_text.setStyleSheet("color: #888;")
+            legend_layout.addWidget(legend_text)
+            legend.setToolTip(label + " · Click to toggle")
+            legend.setStyleSheet(f"QPushButton {{ text-align: left; border: 1px solid {color.name()}; border-radius: 5px; }} QPushButton:!checked {{ color: #888; border-color: #555; }}")
+            legend.clicked.connect(lambda _c=False, k=key: self._toggle_key_flip(k))
+            self.legend_grid.addWidget(legend, idx // columns, idx % columns)
+            self._legend_buttons.append(legend)
+            row = QWidget()
+            row_layout = QHBoxLayout(row)
+            row_layout.setContentsMargins(0, 0, 0, 0)
+            cb = QCheckBox()
+            cb.setChecked(checked)
+            cb.setAccessibleName(label)
+            cb.toggled.connect(lambda value, k=key: self._toggle_series(k, value))
+            row_layout.addWidget(cb)
+            row_layout.addWidget(_label(label), 1)
+            solo = QPushButton("Only")
+            solo.setToolTip("Show only " + label)
+            solo.clicked.connect(lambda _c=False, k=key: self._solo_key(k))
+            row_layout.addWidget(solo)
+            self.selector_grid.addWidget(row, idx, 0)
+            if checked:
+                visible.append((key, pts, label, color))
+        self.chart.empty_message = "Choose a quota to show its history." if items else "Collecting quota snapshots…"
+        self.chart.set_series([(label, color, pts) for _, pts, label, color in visible], since, now)
+        self.choose_btn.setText(f"Choose series ({len(visible)}/{len(items)})")
 
-        self._clear_legend()
-        visible_series: list[tuple[str, QColor, list[tuple[datetime, float]]]] = []
-        forecast_lines: list[str] = []
-        eff_lines: list[str] = []
-
-        for idx, ((pid, bid), pts) in enumerate(sorted(series_map.items())):
-            color = SERIES_PALETTE[idx % len(SERIES_PALETTE)]
-            label = f"{pid}: {bid}"
-            cb = QCheckBox(label)
-            cb.setChecked((pid, bid) not in self._disabled_keys)
-            cb.setStyleSheet(f"QCheckBox {{ color: {color.name()}; }}")
-            cb.toggled.connect(lambda checked, k=(pid, bid): self._toggle_series(k, checked))
-            self.legend_layout.addWidget(cb)
-
-            if (pid, bid) not in self._disabled_keys:
-                visible_series.append((label, color, pts))
-
+        forecasts = []
+        for key, pts, label, color in visible:
+            name, reset = self._bucket_metadata(key)
             details = compute_burn_rate_details(pts)
-            if details is not None:
-                span_str = format_short_duration(details.span_hours)
-                if details.hours_to_empty is not None:
-                    eta_str = format_short_duration(details.hours_to_empty)
-                    forecast_lines.append(
-                        f"• {label}: -{details.rate_pct_per_hour:.2f}%/hr  |  ~{eta_str} to 0%  "
-                        f"({details.sample_count} samples over {span_str})"
-                    )
-                else:
-                    forecast_lines.append(
-                        f"• {label}: Steady (0.00%/hr over {span_str}, {details.sample_count} samples)"
-                    )
-
-            cycles, avg_used = compute_reset_cycle_efficiency(pts)
-            if cycles > 0 and avg_used is not None:
-                eff_lines.append(f"• {label}: avg {avg_used * 100:.1f}% used across {cycles} reset cycle(s)")
-
-        self.chart.set_series(visible_series, since, now)
-        self.forecast_label.setText(
-            "\n".join(forecast_lines) if forecast_lines else "Need at least 2 snapshots per bucket to compute burn rate."
-        )
-        self.heatmap.set_grid(compute_hourly_heatmap(series_map))
-        self.eff_label.setText("\n".join(eff_lines) if eff_lines else "No completed reset cycles recorded in this window yet.")
-
-        tok_rows = self.storage.get_token_usage_summary(since)
-        if tok_rows:
-            tok_lines = [
-                f"• {pid} / {model}: {inp:,} in + {out:,} out ({cached:,} cached)"
-                for pid, model, inp, out, cached in tok_rows
-            ]
-            self.token_label.setText("\n".join(tok_lines))
-        else:
-            self.token_label.setText("No token events recorded yet (ready for local CLI log ingestion).")
+            status, risky = forecast_status(details, reset, now)
+            forecasts.append((not risky, details.hours_to_empty if details and details.hours_to_empty is not None else float("inf"), key, pts, label, color, reset, details, status))
+        forecasts.sort(key=lambda row: (row[0], row[1], row[2]))
+        year_map = self.storage.get_all_series_since(now - timedelta(days=365)) if self._expanded_keys else {}
+        for idx, (_, _, key, pts, label, color, reset, details, status) in enumerate(forecasts):
+            frame = QFrame()
+            frame.setObjectName("ForecastRow")
+            frame.setMinimumWidth(0)
+            frame.setStyleSheet("QFrame#ForecastRow { background: rgba(128,128,128,0.06); border: 1px solid rgba(128,128,128,0.16); border-radius: 8px; }")
+            layout = QGridLayout(frame)
+            layout.setContentsMargins(12, 10, 12, 10)
+            layout.setHorizontalSpacing(12)
+            name_label = _label(label if provider == "*" else self._bucket_metadata(key)[0], True)
+            name_label.setToolTip(label)
+            btn = QPushButton("▾" if key in self._expanded_keys else "▸")
+            btn.setFixedWidth(28)
+            btn.setAccessibleName("Historical rates for " + label)
+            btn.setToolTip("Show historical burn rates")
+            btn.clicked.connect(lambda _c=False, k=key: self._toggle_details(k))
+            rate = format_burn_rate(details.rate_pct_per_hour if details else None)
+            reset_hours = None
+            if reset:
+                reset = reset.replace(tzinfo=timezone.utc) if reset.tzinfo is None else reset
+                reset_hours = (reset - now).total_seconds() / 3600
+            reset_text = (format_short_duration(reset_hours) if reset_hours is not None and reset_hours > 0
+                          else "Awaiting reset" if reset_hours is not None else "Unknown")
+            status_label = _label(status)
+            if status.endswith("May run out before reset"):
+                status_label.setStyleSheet("color: #f59e0b;")
+            if self._compact:
+                layout.addWidget(name_label, 0, 0, 1, 3)
+                layout.addWidget(btn, 0, 3)
+                metrics = [("Remaining", f"{pts[-1][1] * 100:.1f}%"), ("Recent burn", rate), ("Resets in", reset_text)]
+                for row, (heading, value) in enumerate(metrics, 1):
+                    layout.addWidget(_label(heading), row, 0, 1, 2)
+                    layout.addWidget(_label(value), row, 2, 1, 2)
+                layout.addWidget(_label("Estimated empty"), 4, 0, 1, 4)
+                layout.addWidget(status_label, 5, 0, 1, 4)
+                for col in range(4):
+                    layout.setColumnStretch(col, 1)
+                detail_row, span = 6, 4
+            else:
+                cells = [("Quota", name_label), ("Remaining", _label(f"{pts[-1][1] * 100:.1f}%")),
+                         ("Recent burn", _label(rate)), ("Estimated empty", status_label), ("Resets in", _label(reset_text))]
+                for col, (heading, value) in enumerate(cells):
+                    layout.addWidget(_label(heading), 0, col)
+                    layout.addWidget(value, 1, col)
+                    layout.setColumnStretch(col, (3, 2, 2, 4, 2)[col])
+                layout.addWidget(btn, 0, 5, 2, 1)
+                detail_row, span = 2, 6
+            if key in self._expanded_keys:
+                windows = [("1 hour", 1), ("1 day", 24), ("1 week", 168), ("30 days", 720), ("1 year", 8760)]
+                if hours not in [h for _, h in windows]:
+                    windows.append(("Selected range", hours))
+                texts = []
+                for title, window in windows:
+                    sub = [pt for pt in year_map.get(key, pts) if pt[0] >= now - timedelta(hours=window)]
+                    texts.append(f"{title}: {format_burn_rate(compute_average_consumption_rate(sub))}")
+                layout.addWidget(_label("Average consumption · Available samples in each window\n" + " · ".join(texts)), detail_row, 0, 1, span)
+                if details:
+                    layout.addWidget(_label(f"Recent pace: {details.sample_count} samples over {format_short_duration(details.span_hours)}, since the last observed reset within this range."), detail_row + 1, 0, 1, span)
+            self.forecast_grid.addWidget(frame, idx, 0)
+        if not forecasts:
+            self.forecast_grid.addWidget(_label("Select a quota to see forecasts." if items else "Collecting quota snapshots for this provider…"), 0, 0)
+        selected_map = {key: pts for key, pts, _, _ in visible}
+        self.heatmap.set_grid(compute_hourly_heatmap(selected_map))
+        efficiency = []
+        for key, pts, label, _ in visible:
+            cycles, used = compute_reset_cycle_efficiency(pts)
+            if cycles and used is not None:
+                efficiency.append(f"{label}: {used * 100:.1f}% average used · {cycles} completed cycles")
+        self.efficiency_label.setText("\n".join(efficiency) or "No completed reset cycles in the selected range.")
+        tokens = [row for row in self.storage.get_token_usage_summary(since) if provider == "*" or row[0] == provider]
+        self.token_section.setVisible(bool(tokens))
+        self.token_label.setText("\n".join(f"{self._provider_name(pid)} · {model}: {inp:,} input · {out:,} output · {cached:,} cached" for pid, model, inp, out, cached in tokens))
 
     def focus_series(self, provider_id: str, bucket_id: str) -> None:
-        """Enable only (provider_id, bucket_id) in the main chart and refresh."""
-        since_all = datetime.now(timezone.utc) - timedelta(days=30)
-        all_series = self.storage.get_all_series_since(since_all)
-        target = (provider_id, bucket_id)
-        self._disabled_keys = {k for k in all_series.keys() if k != target}
         self.refresh()
+        index = self.provider_combo.findData(provider_id)
+        if index >= 0:
+            self.provider_combo.blockSignals(True)
+            self.provider_combo.setCurrentIndex(index)
+            self.provider_combo.blockSignals(False)
+        target = (provider_id, bucket_id)
+        all_series = self.storage.get_all_series_since(datetime.now(timezone.utc) - timedelta(days=365))
+        self._disabled_keys = {key for key in all_series if key[0] == provider_id and key != target}
+        self.refresh()
+
+    def _select_all_stats(self) -> None:
+        self._disabled_keys.difference_update(self._all_keys)
+        self.refresh()
+
+    def _clear_all_stats(self) -> None:
+        self._disabled_keys.update(self._all_keys)
+        self.refresh()
+
+    def _solo_key(self, key: tuple[str, str]) -> None:
+        self._disabled_keys.update(k for k in self._all_keys if k != key)
+        self._disabled_keys.discard(key)
+        self.refresh()
+
+    def _toggle_key_flip(self, key: tuple[str, str]) -> None:
+        self._toggle_series(key, key in self._disabled_keys)
 
     def _toggle_series(self, key: tuple[str, str], checked: bool) -> None:
         if checked:

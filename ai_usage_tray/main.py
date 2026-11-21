@@ -49,30 +49,62 @@ def acquire_single_instance_lock() -> Optional[object]:
     return fh
 
 
-def main() -> int:
-    lock_handle = acquire_single_instance_lock()
-    if lock_handle is None:
-        print("Another ai-usage-tray instance is already running.", file=sys.stderr, flush=True)
-        return 1
+def main(argv: Optional[list[str]] = None) -> int:
+    args = sys.argv[1:] if argv is None else argv
+    capture_screenshots = "--capture-screenshots" in args
+    demo_mode = "--demo" in args or capture_screenshots
+
+    if not demo_mode:
+        lock_handle = acquire_single_instance_lock()
+        if lock_handle is None:
+            print("Another ai-usage-tray instance is already running.", file=sys.stderr, flush=True)
+            return 1
 
     app = QApplication(sys.argv)
     app.setApplicationName("AIUsageTray")
     app.setQuitOnLastWindowClosed(False)
 
-    config_manager = ConfigManager()
-    storage = HistoryStorage()
+    if demo_mode:
+        import shutil
+        import tempfile
 
-    registry = ProviderRegistry()
-    registry.register(AntigravityProvider(config_manager))
-    registry.register(OpenAICodexProvider(config_manager))
-    registry.register(ClaudeProvider(config_manager))
-    registry.register(NotebookLMProvider(config_manager))
-    registry.register(GeminiWebProvider(config_manager))
-    registry.register(GitHubCopilotProvider(config_manager))
+        demo_dir = tempfile.mkdtemp(prefix="ai_usage_tray_demo_")
+        atexit.register(lambda: shutil.rmtree(demo_dir, ignore_errors=True))
+        config_manager = ConfigManager(config_dir=demo_dir)
+        storage = HistoryStorage(db_path=os.path.join(demo_dir, "history.db"))
+        registry = ProviderRegistry()
+        from ai_usage_tray.demo import register_demo_providers
+
+        register_demo_providers(registry, storage)
+    else:
+        config_manager = ConfigManager()
+        storage = HistoryStorage()
+
+        registry = ProviderRegistry()
+        registry.register(AntigravityProvider(config_manager))
+        registry.register(OpenAICodexProvider(config_manager))
+        registry.register(ClaudeProvider(config_manager))
+        registry.register(NotebookLMProvider(config_manager))
+        registry.register(GeminiWebProvider(config_manager))
+        registry.register(GitHubCopilotProvider(config_manager))
 
     tray_app = AIUsageTrayApp(app, config_manager, registry, storage)
     # Keep strong reference for the lifetime of app.exec()
     app._tray_app = tray_app  # type: ignore[attr-defined]
+    if capture_screenshots:
+        from PyQt6.QtCore import QTimer
+
+        from ai_usage_tray.demo import capture_demo_screenshots
+
+        def _run_capture() -> None:
+            saved = capture_demo_screenshots(app, tray_app, output_dir="docs/images", scale=2.0)
+            for path in saved:
+                print(f"Saved screenshot: {path}", flush=True)
+            app.quit()
+
+        QTimer.singleShot(500, _run_capture)
+    elif demo_mode:
+        tray_app.panel.show_window()
     return app.exec()
 
 

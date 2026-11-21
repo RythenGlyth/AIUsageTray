@@ -476,7 +476,7 @@ class UsagePopupPanel(QWidget):
             self.provider_views[pid] = view
             self.stack.addWidget(view)
 
-        self.analytics_view = AnalyticsTabView(storage=self.storage)
+        self.analytics_view = AnalyticsTabView(storage=self.storage, snapshots=self._snapshots)
         self.stack.addWidget(self.analytics_view)
 
         root.addWidget(self.stack, 1)

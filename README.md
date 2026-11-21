@@ -2,6 +2,12 @@
 
 A cross-platform PyQt6 system tray monitor for AI usage limits across **Antigravity**, **OpenAI Codex**, **Claude**, **NotebookLM**, **Gemini Web**, and **GitHub Copilot**.
 
+![All Providers Overview](docs/images/overview.png)
+
+| Provider Detail & Sparklines | Analytics Dashboard |
+| --- | --- |
+| ![Provider Detail](docs/images/provider-detail.png) | ![Analytics Dashboard](docs/images/analytics.png) |
+
 ## Providers & Features
 - **System Tray & Panel**: Dynamic ring-gauge tray icon showing the lowest remaining quota across providers, left-click floating panel with overview, provider tabs, and analytics, plus a right-click context menu.
 - **Antigravity**:
@@ -73,3 +79,24 @@ pipx install .
 ai-usage-tray
 ```
 
+
+## Demo and screenshots
+
+Run `python -m ai_usage_tray --demo` for a local demo, or
+`python -m ai_usage_tray --capture-screenshots` to refresh `docs/images/`.
+Neither mode queries live providers.
+
+The demo's quota structure follows connected-account observations from 2026-11-21:
+
+| Provider | Demo quotas |
+| --- | --- |
+| Antigravity | Shared Gemini 5-hour + weekly; shared Claude/GPT 5-hour + weekly; separate Gemini 4 Argon weekly |
+| Codex | 5-hour + weekly; reset-credit badge; no code-review quota was returned |
+| Claude | Simulated Pro subscription: 5-hour, weekly, Sonnet weekly |
+| NotebookLM | 5-hour + weekly |
+| Gemini Web | 5-hour + weekly |
+| GitHub Copilot | Monthly premium interactions; chat and completions are unlimited badges |
+
+Usage amounts and history are synthetic. History follows five-hour, weekly, and
+calendar-month reset boundaries. Claude intentionally shows a subscribed account;
+the inspected live account returned no active windows. Quotas vary by account and plan.
