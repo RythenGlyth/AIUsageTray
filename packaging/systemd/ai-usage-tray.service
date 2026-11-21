@@ -1,0 +1,13 @@
+[Unit]
+Description=AIUsageTray - KDE Plasma AI Usage Limits Monitor
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=@LAUNCHER_PATH@
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=graphical-session.target
