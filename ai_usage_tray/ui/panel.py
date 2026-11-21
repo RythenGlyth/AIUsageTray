@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
 from PyQt6.QtCore import QSize, Qt
-from PyQt6.QtGui import QColor, QFont, QIcon, QKeyEvent
+from PyQt6.QtGui import QColor, QFont, QIcon, QKeyEvent, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -474,6 +474,32 @@ class UsagePopupPanel(QWidget):
 
         self.refresh_provider_states()
         self._show_overview()
+
+        QShortcut(QKeySequence("Ctrl+Tab"), self, activated=lambda: self._cycle_view(1))
+        QShortcut(QKeySequence("Ctrl+Shift+Tab"), self, activated=lambda: self._cycle_view(-1))
+        QShortcut(QKeySequence("Ctrl+Backtab"), self, activated=lambda: self._cycle_view(-1))
+
+    def _cycle_view(self, step: int) -> None:
+        # Order: Overview (-1), provider rows (0..N-1), Analytics (N)
+        count = self.provider_list.count()
+        cur_widget = self.stack.currentWidget()
+        if cur_widget is self.overview_view:
+            cur_idx = -1
+        elif cur_widget is self.analytics_view:
+            cur_idx = count
+        else:
+            cur_idx = self.provider_list.currentRow()
+
+        total = count + 2  # overview + providers + analytics
+        # Map [-1 .. count] -> [0 .. total-1]
+        pos = (cur_idx + 1 + step) % total
+        target_idx = pos - 1
+        if target_idx == -1:
+            self._show_overview()
+        elif target_idx == count:
+            self._show_analytics()
+        else:
+            self.provider_list.setCurrentRow(target_idx)
 
     def _ordered_providers(self):
         all_providers = {p.provider_id: p for p in self.registry.all()}
