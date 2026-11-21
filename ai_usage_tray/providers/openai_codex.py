@@ -316,6 +316,13 @@ class OpenAICodexProvider(UsageProvider):
             browser_snap = self._fetch_from_browser_cookies()
             if browser_snap is not None:
                 return browser_snap
+            if mode == "browser":
+                return ProviderUsageSnapshot(
+                    provider_id=self.provider_id,
+                    provider_name=self.display_name,
+                    source_label="Browser Session",
+                    error="No ChatGPT browser session cookies found.",
+                )
 
         return self._fetch_from_oauth()
 

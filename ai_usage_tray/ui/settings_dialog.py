@@ -82,14 +82,16 @@ class SettingsDialog(QDialog):
                 ("Google OAuth Only", "oauth_only"),
             ],
             "openai_codex": [
-                ("Auto (Codex Binary → OAuth)", "auto"),
+                ("Auto (Codex Binary → OAuth → Browser)", "auto"),
                 ("Codex Binary Only", "codex_binary"),
                 ("OpenAI OAuth Only", "oauth"),
+                ("Browser Session Cookies Only", "browser"),
             ],
             "claude": [
-                ("Auto (OAuth / CLI → Desktop)", "auto"),
+                ("Auto (OAuth / CLI → Desktop → Browser)", "auto"),
                 ("OAuth / Claude Code Only", "oauth_only"),
                 ("Claude Desktop Only", "desktop_only"),
+                ("Browser Session Cookies Only", "browser"),
             ],
             "notebooklm": [
                 ("Browser Session Cookies (Auto)", "auto"),

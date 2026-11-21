@@ -183,14 +183,9 @@ def load_claude_desktop_oauth_token() -> Optional[OAuthTokens]:
 
 
 def load_claude_desktop_cookies() -> tuple[dict[str, str], Optional[str]]:
-    """Extract session cookies and organization UUID from Claude Desktop or browser."""
+    """Extract session cookies and organization UUID from Claude Desktop."""
     base = os.path.expanduser("~/.config/Claude")
     cookies = read_chromium_cookies(os.path.join(base, "Cookies"), "claude.ai", applications=("Claude",))
-    if not cookies.get("sessionKey"):
-        records, _ = find_browser_cookie_records("claude.ai", ("sessionKey",))
-        if records:
-            cookies = {r.name: r.value for r in records}
-
     org_id = cookies.get("lastActiveOrg")
 
     if not org_id:
@@ -208,6 +203,15 @@ def load_claude_desktop_cookies() -> tuple[dict[str, str], Optional[str]]:
     return cookies, org_id
 
 
+def load_claude_browser_cookies() -> tuple[dict[str, str], Optional[str]]:
+    """Extract claude.ai session cookies and organization UUID from installed browsers."""
+    records, _ = find_browser_cookie_records("claude.ai", ("sessionKey",))
+    if not records:
+        return {}, None
+    cookies = {r.name: r.value for r in records}
+    return cookies, cookies.get("lastActiveOrg")
+
+
 class ClaudeProvider(UsageProvider):
     provider_id = "claude"
     display_name = "Claude"
@@ -220,18 +224,22 @@ class ClaudeProvider(UsageProvider):
 
     def get_auth_status(self) -> AuthStatus:
         mode = self.config_manager.config.claude.mode
-        if mode != "desktop_only":
+        if mode not in ("desktop_only", "browser"):
             if load_keyring_tokens(self.provider_id) is not None:
                 return AuthStatus(True, "OAuth (keyring)")
             if load_claude_code_credentials() is not None:
                 return AuthStatus(True, "Claude Code CLI credentials")
-        if mode != "oauth_only":
+        if mode in ("auto", "desktop_only"):
             if load_claude_desktop_oauth_token() is not None:
                 return AuthStatus(True, "Claude Desktop OAuth cache")
             cookies, org_id = load_claude_desktop_cookies()
             if cookies.get("sessionKey") and org_id:
                 return AuthStatus(True, "Claude Desktop session cookie")
-        return AuthStatus(False, "No Claude OAuth token or Desktop session found", needs_interactive_login=True)
+        if mode in ("auto", "browser"):
+            b_cookies, b_org = load_claude_browser_cookies()
+            if b_cookies.get("sessionKey") and b_org:
+                return AuthStatus(True, "Browser session cookie (claude.ai)")
+        return AuthStatus(False, "No Claude OAuth token, Desktop, or browser session found", needs_interactive_login=True)
 
     def start_oauth_login(self) -> tuple[bool, str]:
         cfg = self.config_manager.config.claude
@@ -268,16 +276,37 @@ class ClaudeProvider(UsageProvider):
                 )
 
         if mode in ("auto", "desktop_only"):
-            desktop_snap = self._fetch_via_desktop_cookies()
+            cookies, org_id = load_claude_desktop_cookies()
+            desktop_snap = self._fetch_via_cookies(cookies, org_id, source_label="Desktop Cookies")
             if desktop_snap is not None:
                 return desktop_snap
+            if mode == "desktop_only":
+                return ProviderUsageSnapshot(
+                    provider_id=self.provider_id,
+                    provider_name=self.display_name,
+                    source_label="Desktop Cookies",
+                    error="No Claude Desktop sessionKey found.",
+                )
+
+        if mode in ("auto", "browser"):
+            b_cookies, b_org = load_claude_browser_cookies()
+            browser_snap = self._fetch_via_cookies(b_cookies, b_org, source_label="Browser Session")
+            if browser_snap is not None:
+                return browser_snap
+            if mode == "browser":
+                return ProviderUsageSnapshot(
+                    provider_id=self.provider_id,
+                    provider_name=self.display_name,
+                    source_label="Browser Session",
+                    error="No claude.ai browser sessionKey cookie found.",
+                )
 
         return ProviderUsageSnapshot(
             provider_id=self.provider_id,
             provider_name=self.display_name,
             source_label="Unauthenticated",
             auth_required=True,
-            error="No Claude OAuth token or Claude Desktop sessionKey found.",
+            error="No Claude OAuth token, Desktop, or browser sessionKey found.",
         )
 
     def _resolve_oauth_tokens(self) -> tuple[Optional[OAuthTokens], bool]:
@@ -348,8 +377,12 @@ class ClaudeProvider(UsageProvider):
                 error=f"Claude OAuth request failed: {exc}",
             )
 
-    def _fetch_via_desktop_cookies(self) -> Optional[ProviderUsageSnapshot]:
-        cookies, org_id = load_claude_desktop_cookies()
+    def _fetch_via_cookies(
+        self,
+        cookies: dict[str, str],
+        org_id: Optional[str],
+        source_label: str,
+    ) -> Optional[ProviderUsageSnapshot]:
         session_key = cookies.get("sessionKey")
         if not session_key or not org_id:
             return None
@@ -375,7 +408,7 @@ class ClaudeProvider(UsageProvider):
                 return ProviderUsageSnapshot(
                     provider_id=self.provider_id,
                     provider_name=self.display_name,
-                    source_label="Desktop Cookies",
+                    source_label=source_label,
                     rate_limited_until=until,
                     error=f"Rate limited (HTTP 429). Backing off for {retry_after}s.",
                 )
@@ -383,21 +416,21 @@ class ClaudeProvider(UsageProvider):
                 return ProviderUsageSnapshot(
                     provider_id=self.provider_id,
                     provider_name=self.display_name,
-                    source_label="Desktop Cookies",
-                    error=f"Claude Desktop cookie rejected ({resp.status_code}). Connect OAuth or refresh Claude Desktop.",
+                    source_label=source_label,
+                    error=f"Claude cookie rejected ({resp.status_code}). Connect OAuth or refresh session.",
                 )
             if resp.status_code >= 400:
                 return ProviderUsageSnapshot(
                     provider_id=self.provider_id,
                     provider_name=self.display_name,
-                    source_label="Desktop Cookies",
+                    source_label=source_label,
                     error=f"Claude usage error ({resp.status_code}): {resp.text[:200]}",
                 )
-            return parse_claude_usage_payload(resp.json(), source_label="Desktop Cookies")
+            return parse_claude_usage_payload(resp.json(), source_label=source_label)
         except Exception as exc:
             return ProviderUsageSnapshot(
                 provider_id=self.provider_id,
                 provider_name=self.display_name,
-                source_label="Desktop Cookies",
-                error=f"Claude Desktop cookie request failed: {exc}",
+                source_label=source_label,
+                error=f"Claude cookie request failed: {exc}",
             )
